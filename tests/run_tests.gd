@@ -90,7 +90,7 @@ func test_instantiate_painter_scene() -> void:
 	check(inst.get_node_or_null("SubViewport/MouseCamera3D/ScreenQuad") != null,
 		"SubViewport/MouseCamera3D/ScreenQuad exists")
 	if p3d != null:
-		check(p3d.brush_size == 5, "brush size parsed from BrushLineEdit (5)")
+		check(p3d.brush_size == 5, "brush size slider defaults to 5")
 		test_forward_3d_input(p3d)
 		await test_paint_lock(p3d)
 		test_paint_material(p3d)
@@ -465,13 +465,34 @@ func test_brush_controls(p3d: Node) -> void:
 	var picker: ColorPicker = box.get_node("ColorPicker")
 	check(picker.sliders_visible and picker.color_modes_visible and picker.presets_visible
 		and picker.sampler_visible, "F7: color picker shows sliders, modes, presets and eyedropper")
-	var slider: HSlider = box.get_node_or_null("OpacityRow/OpacitySlider")
 	var hint: Label = box.get_node_or_null("ShortcutHint")
-	check(slider != null and hint != null and hint.text.contains("Alt") and hint.text.contains("Ctrl")
+	check(hint != null and hint.text.contains("Alt") and hint.text.contains("Ctrl")
 		and box.get_node_or_null("PickColorButton") == null,
-		"F9: opacity slider + shortcut hint (Ctrl/Alt), no pick toggle button")
-	if slider == null:
+		"F9: shortcut hint (Ctrl/Alt), no pick toggle button")
+
+	# F11: opacity is the picker's alpha slider; Intensity (4.5+) is hidden;
+	# no separate opacity row any more.
+	check(picker.edit_alpha and box.get_node_or_null("OpacityRow") == null,
+		"F11: opacity = the picker's A slider (no separate opacity row)")
+	check(not ("edit_intensity" in picker) or not picker.get("edit_intensity"),
+		"F11: the picker's Intensity slider is hidden (where it exists)")
+
+	# F11: brush size slider with an adjustable max.
+	var size_slider: HSlider = box.get_node_or_null("BrushSizeRow/BrushSizeSlider")
+	var size_max: SpinBox = box.get_node_or_null("BrushSizeRow/BrushSizeMax")
+	check(size_slider != null and size_max != null and box.get_node_or_null("BrushLineEdit") == null,
+		"F11: brush size is a slider with a Max field (no text field)")
+	if size_slider == null or size_max == null:
 		return
+	size_slider.value = 12
+	check(p3d.brush_size == 12, "F11: moving the slider sets the brush size")
+	size_max.value = 8
+	check(size_slider.max_value == 8 and p3d.brush_size == 8, "F11: lowering Max clamps the slider and brush size")
+	size_max.value = 200
+	size_slider.value = 150
+	check(p3d.brush_size == 150, "F11: raising Max allows larger brushes")
+	size_max.value = 50
+	size_slider.value = 5
 
 	# Opacity: 50 % twice within ONE stroke stays at 50 %; a new stroke builds on it.
 	var mi := MeshInstance3D.new()
@@ -483,8 +504,7 @@ func test_brush_controls(p3d: Node) -> void:
 	p3d.active_mdt.create_from_surface(mesh, 0)
 	p3d.ensure_vertex_colors(p3d.active_mdt)
 	p3d.begin_stroke_colors()
-	picker.color = Color.BLACK
-	slider.value = 50
+	picker.color = Color(0, 0, 0, 0.5)  # black at 50 % opacity (A slider)
 	var v0: Array[int] = [0]
 	p3d.apply_brush(v0)
 	p3d.apply_brush(v0)
@@ -495,10 +515,12 @@ func test_brush_controls(p3d: Node) -> void:
 	check(p3d.active_mdt.get_vertex_color(0).is_equal_approx(Color(0.25, 0.25, 0.25)),
 		"F7: a second stroke builds on the first -> 0.25 grey")
 	check(p3d.active_mdt.get_vertex_color(1) == Color.WHITE, "F7: untouched vertices keep their color")
+	check(p3d.active_mdt.get_vertex_color(0).a == 1.0,
+		"F11: painting at 50 % opacity keeps the vertex's own alpha at 1 (opacity only blends RGB)")
 	var committed: PackedColorArray = mi.mesh.surface_get_arrays(0)[Mesh.ARRAY_COLOR]
 	# Meshes store vertex colors as 8 bits per channel: compare within ~1/255.
 	check(_color_close(committed[0], Color(0.25, 0.25, 0.25)), "F7: the mesh is rebuilt with the blended color (got %s)" % committed[0])
-	slider.value = 100
+	picker.color = Color(0, 0, 0, 1)
 
 	# Pick from mesh: color of the vertex nearest a world point.
 	mi.global_transform = Transform3D(Basis().scaled(Vector3(2, 1, 3)), Vector3(5, 0, 0))

@@ -10,7 +10,6 @@ signal editable_children_requested(instance_root: Node, mesh: MeshInstance3D)
 @onready var enable_check_box = $"../VBoxContainer/EnableCheckBox"
 @onready var space: PhysicsDirectSpaceState3D = get_world_3d().direct_space_state
 @onready var color_picker = $"../VBoxContainer/ColorPicker"
-@onready var brush_line_edit = $"../VBoxContainer/BrushLineEdit"
 @onready var mouse_camera_3d: Camera3D = $"../SubViewport/MouseCamera3D"
 @onready var sub_viewport = $"../SubViewport"
 @onready var debug: MeshInstance3D = $"../Debug"
@@ -42,8 +41,9 @@ var _editable_button: Button
 var _hint_root: Node = null
 var _hint_mesh: MeshInstance3D = null
 # Brush controls built in code (see _build_brush_ui()).
-var _opacity_slider: HSlider
-var _opacity_value: Label
+var _brush_slider: HSlider
+var _brush_value: Label
+var _brush_max: SpinBox
 # Alt+click/drag eyedropper state (see forward_3d_input()).
 var _alt_pick_down := false
 # An Alt+drag that started off the selected mesh belongs to the editor (orbit).
@@ -450,7 +450,7 @@ func begin_stroke_colors() -> void:
 		_stroke_base[v] = active_mdt.get_vertex_color(v)
 
 func brush_opacity() -> float:
-	return _opacity_slider.value / 100.0 if _opacity_slider else 1.0
+	return color_picker.color.a  # the picker's A slider is the opacity
 
 # Blend the picked color into `vertices` by the brush opacity, starting from
 # the colors they had before the stroke, then rebuild the mesh ONCE (it used
@@ -488,7 +488,7 @@ func _pick_color() -> void:
 	_pick_busy = false
 	if hit.is_finite() and is_instance_valid(target):
 		var picked := color_at(target, hit)
-		picked.a = 1.0
+		picked.a = color_picker.color.a  # keep the current opacity
 		color_picker.color = picked
 
 func legacy_paint() -> void:
@@ -563,53 +563,67 @@ func get_closest_vertex(mdt: MeshDataTool, mesh_xform: Transform3D, hit_pos: Vec
 	return closest_index
 
 func set_brush_size() -> void:
-	var brush_s = brush_line_edit.text
-	
-	var brush_s_f = float(brush_s)
-	
-	brush_size = int(round(brush_s_f))
-	
-	brush_line_edit.text = str(brush_size)
-	msg("Brush size = " + str(brush_size))
+	brush_size = int(_brush_slider.value)
+	_brush_value.text = str(brush_size)
 
 func _ready() -> void:
-	set_brush_size()
 	enable_check_box.toggled.connect(_on_enable_check_box_toggled)
+	_setup_color_picker()
 	_build_brush_ui()
 	_build_hint_ui()
+	set_brush_size()
 
-# Opacity slider and "Pick from mesh" button, placed right after the brush size.
+# Brush opacity lives in the picker's own alpha ("A") slider. The Intensity
+# slider (HDR, Godot 4.5+) is hidden: vertex colors are stored as 0..1 with 8
+# bits per channel, so brightening past white would just clip.
+func _setup_color_picker() -> void:
+	color_picker.edit_alpha = true
+	if "edit_intensity" in color_picker:
+		color_picker.set("edit_intensity", false)
+	color_picker.tooltip_text = "The A (alpha) slider is the brush opacity: how much of the color each stroke applies."
+
+# Brush size slider (1..Max, a vertex count) with an adjustable Max, placed
+# under the "Brush Size:" label; then the shortcut hint.
 func _build_brush_ui() -> void:
-	var opacity_row := HBoxContainer.new()
-	opacity_row.name = "OpacityRow"
-	var opacity_label := Label.new()
-	opacity_label.text = "Opacity:"
-	_opacity_slider = HSlider.new()
-	_opacity_slider.name = "OpacitySlider"
-	_opacity_slider.min_value = 1
-	_opacity_slider.max_value = 100
-	_opacity_slider.step = 1
-	_opacity_slider.value = 100
-	_opacity_slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_opacity_slider.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	_opacity_slider.tooltip_text = "How much of the color each stroke applies. Lower values build up gradually over several strokes."
-	_opacity_value = Label.new()
-	_opacity_value.custom_minimum_size.x = 40
-	_opacity_slider.value_changed.connect(func(v: float): _opacity_value.text = "%d%%" % v)
-	_opacity_value.text = "100%"
-	opacity_row.add_child(opacity_label)
-	opacity_row.add_child(_opacity_slider)
-	opacity_row.add_child(_opacity_value)
+	var row := HBoxContainer.new()
+	row.name = "BrushSizeRow"
+	_brush_slider = HSlider.new()
+	_brush_slider.name = "BrushSizeSlider"
+	_brush_slider.min_value = 1
+	_brush_slider.max_value = 50
+	_brush_slider.step = 1
+	_brush_slider.value = 5
+	_brush_slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_brush_slider.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	_brush_slider.tooltip_text = "Number of vertices painted around the cursor."
+	_brush_slider.value_changed.connect(func(_v: float): set_brush_size())
+	_brush_value = Label.new()
+	_brush_value.custom_minimum_size.x = 32
+	var max_label := Label.new()
+	max_label.text = "Max:"
+	_brush_max = SpinBox.new()
+	_brush_max.name = "BrushSizeMax"
+	_brush_max.min_value = 2
+	_brush_max.max_value = 100000
+	_brush_max.step = 1
+	_brush_max.value = 50
+	_brush_max.tooltip_text = "Largest value the brush size slider goes up to."
+	_brush_max.value_changed.connect(func(v: float): _brush_slider.max_value = v)
+	row.add_child(_brush_slider)
+	row.add_child(_brush_value)
+	row.add_child(max_label)
+	row.add_child(_brush_max)
 
 	var shortcuts := Label.new()
 	shortcuts.name = "ShortcutHint"
-	shortcuts.text = "Ctrl+click: switch mesh\nAlt+click/drag: pick color"
+	shortcuts.text = "Ctrl+click: switch mesh\nAlt+click/drag: pick color\nA slider (in the picker): opacity"
 	shortcuts.modulate = Color(1, 1, 1, 0.7)
 	shortcuts.mouse_filter = Control.MOUSE_FILTER_PASS  # so the tooltip shows
 	shortcuts.tooltip_text = "While painting is enabled. It only picks when the selected mesh is under the cursor; elsewhere Alt+drag still reaches the editor (e.g. \"Emulate 3 Button Mouse\" orbit).\nSome Linux window managers use Alt+drag to move windows; Alt+click still works there."
 
-	brush_line_edit.add_sibling(shortcuts)
-	brush_line_edit.add_sibling(opacity_row)
+	var size_label: Label = $"../VBoxContainer/Label"
+	size_label.add_sibling(shortcuts)
+	size_label.add_sibling(row)
 
 func _build_hint_ui() -> void:
 	var box: VBoxContainer = $"../VBoxContainer"
@@ -647,9 +661,3 @@ func show_instance_hint(root: Node, mesh: MeshInstance3D) -> void:
 func _on_editable_button_pressed() -> void:
 	if is_instance_valid(_hint_root) and is_instance_valid(_hint_mesh):
 		editable_children_requested.emit(_hint_root, _hint_mesh)
-
-func _on_brush_line_edit_text_submitted(new_text):
-	set_brush_size()
-
-func _on_brush_line_edit_focus_exited():
-	set_brush_size()
