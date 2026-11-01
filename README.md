@@ -35,7 +35,7 @@ https://github.com/bikemurt/godot-vertex-painter/assets/23486102/fea58b3f-8b71-4
 - **Alt+click / Alt+drag** picks a color from the painted mesh; **Shift+drag** erases
 - Built-in shapes (PlaneMesh, BoxMesh, …) can be painted
 - Brush size is a slider with an adjustable maximum
-- Fixes: the brush painted the wrong vertices on small meshes, the mesh stayed locked after painting, and clicking empty space could paint the mesh
+- Fixes: the brush painted the wrong vertices on small meshes, the mesh stayed locked after painting, clicking empty space could paint the mesh, and pointing at another object (or zooming far out on a big mesh) painted the mesh's edge instead
 - Automated test harness for development (`tests/`, not part of the addon)
 
 ---
@@ -73,6 +73,7 @@ https://github.com/bikemurt/godot-vertex-painter/assets/23486102/fea58b3f-8b71-4
 
 - Paint is stored per vertex. Built-in shapes (PlaneMesh, BoxMesh, …) become an editable mesh on the first stroke, so set their subdivisions before painting.
 - Only the first surface (material slot) of a mesh is painted.
+- While painting is enabled, the selected mesh is temporarily put on render layer 20 (removed again when you stop, and never saved). Other objects don't block the brush: it paints the selected mesh under the cursor even through them.
 
 ## 🏠 Links
 
