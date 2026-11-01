@@ -106,6 +106,53 @@ func _lock_steps() -> bool:
 	return ok
 
 
+## F6 in a real editor: selecting an instanced scene (like an imported .glb
+## rock) whose mesh isn't editable shows the dock hint + button and doesn't
+## paint; the button enables Editable Children (undoable) and selects the mesh,
+## which then becomes the paint target.
+const INSTANCED_SCENE := "res://.godot/test-logs/f6_instanced_probe.tscn"
+
+func _instance_steps() -> bool:
+	var ok := true
+	DirAccess.copy_absolute(ProjectSettings.globalize_path("res://tests/manual_test_instanced.tscn"),
+		ProjectSettings.globalize_path(INSTANCED_SCENE))
+	EditorInterface.open_scene_from_path(INSTANCED_SCENE)
+	await _wait()
+	EditorInterface.reload_scene_from_path(INSTANCED_SCENE)
+	await _wait()
+	var root := EditorInterface.get_edited_scene_root()
+	var rock: Node = root.get_node_or_null("RockA") if root else null
+	var rock_mesh: Node = rock.get_node_or_null("RockMesh") if rock else null
+	var check_box := _enable_check_box()
+	var painter: Node = check_box.get_node("../../VertexPainter3D") if check_box else null
+	ok = _report("instance_setup", rock != null and rock_mesh != null and painter != null) and ok
+	if rock == null or rock_mesh == null or painter == null:
+		return false
+	var hint: Label = check_box.get_node("../HintLabel")
+	var button: Button = check_box.get_node("../EditableChildrenButton")
+	var selection := EditorInterface.get_selection()
+	selection.clear()
+	selection.add_node(rock)
+	await _wait()
+	ok = _report("instance_hint_shown", hint.visible and button.visible and hint.text.contains("RockA")
+		and painter.target == null and not root.is_editable_instance(rock)) and ok
+
+	button.pressed.emit()
+	await _wait()
+	var selected := selection.get_selected_nodes()
+	ok = _report("instance_editable_enabled", root.is_editable_instance(rock)) and ok
+	ok = _report("instance_mesh_selected", selected.size() == 1 and selected[0] == rock_mesh
+		and painter.target == rock_mesh and not button.visible, "selected=%s" % [selected]) and ok
+
+	var undo_redo := get_undo_redo()
+	undo_redo.get_history_undo_redo(undo_redo.get_object_history_id(root)).undo()
+	await _wait()
+	ok = _report("instance_editable_undo", not root.is_editable_instance(rock)) and ok
+	selection.clear()
+	await _wait()
+	return ok
+
+
 func _run() -> void:
 	await _wait()
 	var ok := true
@@ -114,6 +161,7 @@ func _run() -> void:
 	print("EDITOR_PROBE initial panels=%d expected=1 %s" % [initial, "PASS" if init_ok else "FAIL"])
 	ok = ok and init_ok
 	ok = await _lock_steps() and ok
+	ok = await _instance_steps() and ok
 	ok = await _step("disable", false, 0) and ok
 	ok = await _step("enable", true, 1) and ok
 	ok = await _step("disable2", false, 0) and ok
