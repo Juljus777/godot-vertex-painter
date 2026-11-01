@@ -5,15 +5,14 @@ uniform sampler2D depth_texture : source_color, hint_depth_texture, filter_neare
 
 uniform float camera_far = 100000.0;
 
-// Mobile renderer HDR mode has limit of 1 or 2. Pack full range depth to RG
-// https://gamedev.stackexchange.com/questions/201151/24bit-float-to-rgb
-vec3 encode_rg(float value) {
-    vec2 kEncodeMul = vec2(1.0, 255.0);
-    float kEncodeBit = 1.0 / 255.0;
-    vec2 color = kEncodeMul * value / camera_far;
-    color = fract(color);
-    color.x -= color.y * kEncodeBit;
-	return vec3(color, 0.);
+// The linear distance is written as a 24-bit integer split over R, G and B
+// (8 bits each): about 6 mm steps over the camera's 100 km range. (Two
+// channels gave ~1.5 m steps, which grew to 10+ m errors once the sRGB
+// conversion below was involved, painting far from the cursor when zoomed
+// out.) The viewport stores colors as 8-bit sRGB, converting from linear on
+// output, so each byte is pre-converted to linear here to come back exact.
+vec3 srgb_to_linear(vec3 c) {
+	return mix(c / 12.92, pow((c + vec3(0.055)) / 1.055, vec3(2.4)), step(vec3(0.04045), c));
 }
 
 void fragment() {
@@ -21,6 +20,9 @@ void fragment() {
 	vec3 ndc = vec3(SCREEN_UV * 2.0 - 1.0, depth);
 	vec4 view = INV_PROJECTION_MATRIX * vec4(ndc, 1.0);
 	view.xyz /= view.w;
-	float depth_linear = -view.z;
-	ALBEDO = encode_rg(depth_linear); // Encoded value for Mobile
+	float d = floor(clamp(-view.z / camera_far, 0.0, 1.0) * 16777215.0);
+	float r = floor(d / 65536.0);
+	float g = floor((d - r * 65536.0) / 256.0);
+	float b = d - r * 65536.0 - g * 256.0;
+	ALBEDO = srgb_to_linear(vec3(r, g, b) / 255.0);
 }
