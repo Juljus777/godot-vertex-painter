@@ -98,6 +98,7 @@ func test_instantiate_painter_scene() -> void:
 		test_ctrl_select(p3d)
 		test_paint_modes(p3d)
 		test_unpaintable_mesh(p3d)
+		test_eraser(p3d)
 	inst.queue_free()
 	await process_frame
 
@@ -461,22 +462,93 @@ func test_ctrl_select(p3d: Node) -> void:
 # (the atmosphere ground plane turned into a rock).
 func test_unpaintable_mesh(p3d: Node) -> void:
 	var rock := _sphere_mi()
-	check(p3d.load_mesh_for_paint(rock) and p3d.active_mdt.get_vertex_count() > 0, "F14: an ArrayMesh loads for painting")
+	check(p3d.load_mesh_for_paint(rock) and p3d.active_mdt.get_vertex_count() > 100, "F14: an ArrayMesh loads for painting")
+	# F15: built-in shapes load through an ArrayMesh copy of their own geometry.
 	var plane := MeshInstance3D.new()
 	plane.name = "Ground"
 	var plane_mesh := PlaneMesh.new()
+	plane_mesh.subdivide_width = 3
+	plane_mesh.subdivide_depth = 3
 	plane.mesh = plane_mesh
 	root.add_child(plane)
-	check(not p3d.load_mesh_for_paint(plane), "F14: a PlaneMesh is refused")
-	check(plane.mesh == plane_mesh and plane.get_surface_override_material(0) == null,
-		"F14: the PlaneMesh is left untouched (not replaced by the previous mesh)")
-	check(p3d.active_mdt.get_vertex_count() == 0, "F14: the previous mesh's data is cleared")
+	var plane_verts := (plane_mesh.get_mesh_arrays()[Mesh.ARRAY_VERTEX] as PackedVector3Array).size()
+	check(p3d.load_mesh_for_paint(plane) and p3d.active_mdt.get_vertex_count() == plane_verts,
+		"F15: a PlaneMesh loads with its OWN %d vertices (not the previous mesh's)" % plane_verts)
 	var hint: Label = p3d.get_node("../VBoxContainer/HintLabel")
-	check(hint.visible and hint.text.contains("PlaneMesh") and hint.text.contains("Ground"),
-		"F14: the dock says why")
+	check(hint.visible and hint.text.contains("subdivide"), "F15: the dock suggests subdividing built-in shapes")
+	check(plane.mesh == plane_mesh, "F15: loading alone doesn't change the node's mesh")
+	var prim_mat := StandardMaterial3D.new()
+	var box := BoxMesh.new()
+	box.material = prim_mat
+	var converted: ArrayMesh = p3d.primitive_to_array_mesh(box)
+	check(converted.get_surface_count() == 1 and converted.surface_get_material(0) == prim_mat,
+		"F15: the editable copy keeps the shape's material")
+	# F14: a mesh type that still can't be painted is refused and left alone.
+	p3d.load_mesh_for_paint(rock)
+	var other := MeshInstance3D.new()
+	other.name = "Other"
+	var imm := ImmediateMesh.new()
+	other.mesh = imm
+	root.add_child(other)
+	check(not p3d.load_mesh_for_paint(other) and other.mesh == imm and other.get_surface_override_material(0) == null,
+		"F14: an unsupported mesh type is refused and left untouched")
+	check(p3d.active_mdt.get_vertex_count() == 0, "F14: the previous mesh's data is cleared")
+	check(hint.visible and hint.text.contains("ImmediateMesh") and hint.text.contains("Other"), "F14: the dock says why")
 	p3d.show_instance_hint(null, null)
 	rock.free()
 	plane.free()
+	other.free()
+
+
+# F16: Shift+drag erases. Normal: coverage drops (texture shows again);
+# Multiply: back toward white. Same opacity and per-stroke cap as painting.
+func test_eraser(p3d: Node) -> void:
+	var covered := Color(1, 0, 0, 1)
+	check(_color4_close(p3d.blend_erase(covered, 1.0, true), Color(1, 0, 0, 0)), "F16: Normal, full erase -> no coverage")
+	check(_color4_close(p3d.blend_erase(covered, 0.5, true), Color(1, 0, 0, 0.5)), "F16: Normal, 50 % erase halves coverage")
+	check(_color4_close(p3d.blend_erase(Color(0.2, 0.2, 0.2, 1), 1.0, false), Color.WHITE), "F16: Multiply, full erase -> white")
+	check(_color4_close(p3d.blend_erase(Color(0.2, 0.2, 0.2, 1), 0.5, false), Color(0.6, 0.6, 0.6, 1)),
+		"F16: Multiply, 50 % erase moves halfway to white")
+
+	# Routing: Shift+press starts an erase stroke; a plain press paints.
+	var enable: CheckBox = p3d.get_node("../VBoxContainer/EnableCheckBox")
+	var cam := Camera3D.new()
+	root.add_child(cam)
+	var mi := _sphere_mi()
+	enable.button_pressed = true
+	p3d.set_target(mi)
+	var shift_press := _mouse_button(MOUSE_BUTTON_LEFT, true)
+	shift_press.shift_pressed = true
+	check(p3d.forward_3d_input(cam, shift_press) and p3d._erasing and p3d._stroke_down,
+		"F16: Shift+press is consumed and starts an erase stroke")
+	p3d.forward_3d_input(cam, _mouse_button(MOUSE_BUTTON_LEFT, false))
+	check(p3d.forward_3d_input(cam, _mouse_button(MOUSE_BUTTON_LEFT, true)) and not p3d._erasing,
+		"F16: a plain press paints again")
+	p3d.forward_3d_input(cam, _mouse_button(MOUSE_BUTTON_LEFT, false))
+	enable.button_pressed = false
+	p3d.set_target(null)
+
+	# Through apply_brush on a Normal-mode mesh: erase the painted vertex.
+	var option: OptionButton = p3d.get_node("../VBoxContainer/ModeRow/ModeOption")
+	var picker: ColorPicker = p3d.get_node("../VBoxContainer/ColorPicker")
+	var nmi := _sphere_mi(null, Color(1, 0, 0, 1))
+	p3d.prepare_paint_material(nmi, 1)
+	option.select(1)
+	p3d.mesh_i = nmi
+	p3d.load_mesh_for_paint(nmi)
+	p3d.begin_stroke_colors()
+	picker.color = Color(1, 1, 1, 1)
+	p3d._erasing = true
+	var v0: Array[int] = [0]
+	p3d.apply_brush(v0)
+	check(_vcolor(nmi, 0).a < 0.01 and _vcolor(nmi, 1).a > 0.99,
+		"F16: erasing in Normal removes the paint's coverage on the dabbed vertex only")
+	p3d._erasing = false
+	p3d.mesh_i = null
+	option.select(0)
+	cam.free()
+	mi.free()
+	nmi.free()
 
 
 func _sphere_mi(material: Material = null, colors: Color = Color(0, 0, 0, -1)) -> MeshInstance3D:
