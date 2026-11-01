@@ -46,6 +46,8 @@ var _opacity_slider: HSlider
 var _opacity_value: Label
 # Alt+click/drag eyedropper state (see forward_3d_input()).
 var _alt_pick_down := false
+# An Alt+drag that started off the selected mesh belongs to the editor (orbit).
+var _alt_editor_drag := false
 var _pick_busy := false
 # Vertex colors at the start of the current stroke. Opacity blends from these,
 # so going over the same spot within one stroke never exceeds the opacity.
@@ -345,12 +347,28 @@ func selectable_node_for(mesh: Node, scene_root: Node) -> Node:
 # event was used for painting; the editor then skips its own selection and
 # transform handling for it, so no edit lock is needed during a stroke.
 # Right/middle buttons, wheel and hover always pass through (camera navigation).
+func is_target_under_cursor(camera: Camera3D, screen_pos: Vector2) -> bool:
+	return is_instance_valid(target) and target.mesh != null and is_finite(ray_hit_distance(
+		target, camera.project_ray_origin(screen_pos), camera.project_ray_normal(screen_pos)))
+
 func forward_3d_input(camera: Camera3D, event: InputEvent) -> bool:
 	# Alt+click / Alt+drag while painting: pick the color under the cursor
 	# (eyedropper) instead of painting. Keeps picking while dragging.
+	# Only when the selected mesh is under the cursor; otherwise the whole
+	# Alt+drag goes to the editor (e.g. "Emulate 3 Button Mouse" orbit).
+	if _alt_editor_drag:
+		if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT \
+				and not event.pressed:
+			_alt_editor_drag = false
+		if event is InputEventMouseMotion and not (event.button_mask & MOUSE_BUTTON_MASK_LEFT):
+			_alt_editor_drag = false  # released outside the viewport
+		return false
 	if enable_check_box.button_pressed and target != null:
 		if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
 			if event.pressed and event.alt_pressed:
+				if not is_target_under_cursor(camera, event.position):
+					_alt_editor_drag = true
+					return false
 				_alt_pick_down = true
 				view_camera = camera
 				view_mouse_pos = event.position
@@ -588,7 +606,7 @@ func _build_brush_ui() -> void:
 	shortcuts.text = "Ctrl+click: switch mesh\nAlt+click/drag: pick color"
 	shortcuts.modulate = Color(1, 1, 1, 0.7)
 	shortcuts.mouse_filter = Control.MOUSE_FILTER_PASS  # so the tooltip shows
-	shortcuts.tooltip_text = "While painting is enabled. Alt+left-drag overrides the editor's \"Emulate 3 Button Mouse\" orbit while painting.\nSome Linux window managers use Alt+drag to move windows; Alt+click still works there."
+	shortcuts.tooltip_text = "While painting is enabled. It only picks when the selected mesh is under the cursor; elsewhere Alt+drag still reaches the editor (e.g. \"Emulate 3 Button Mouse\" orbit).\nSome Linux window managers use Alt+drag to move windows; Alt+click still works there."
 
 	brush_line_edit.add_sibling(shortcuts)
 	brush_line_edit.add_sibling(opacity_row)
