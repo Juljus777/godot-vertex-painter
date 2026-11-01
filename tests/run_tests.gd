@@ -179,18 +179,31 @@ func test_get_n_closest_vertices() -> void:
 	var r2: Array[int] = painter.get_n_closest_vertices(big, Vector3(-50, 0, 0), Vector3.ZERO, 3)
 	check(_sorted(r2) == [3, 4, 5], "large mesh, mesh_pos offset, n=3 -> [3, 4, 5] (got %s)" % [r2])
 
-	# Small spacing: squared distances < 1. Upstream bug B1 (`furthest_dist := 0`
-	# is an int) truncates them to 0, so the first n vertices are never replaced.
-	# Correct answer would be [4, 5]; current behaviour returns [0, 1].
+	# Small spacing: squared distances < 1. Before the B1 fix (`furthest_dist`
+	# was an int) these truncated to 0 and this returned [0, 1].
 	var small := _line_mdt([0.0, 0.1, 0.2, 0.3, 0.4, 0.5])
 	var r3: Array[int] = painter.get_n_closest_vertices(small, Vector3.ZERO, Vector3(0.5, 0, 0), 2)
-	check(_sorted(r3) == [0, 1], "small mesh, n=2, hit at x=0.5 -> [0, 1] (B1 bug, got %s)" % [r3])
+	check(_sorted(r3) == [4, 5], "small mesh, n=2, hit at x=0.5 -> [4, 5] (B1 fixed, got %s)" % [r3])
+
+	# The manual-test sphere (radius 1): with brush size 5, the painted vertices
+	# must include the true closest one and stay near the cursor. Before the B1
+	# fix they sat near the top cap, up to ~1 unit away.
+	var sphere := MeshDataTool.new()
+	sphere.create_from_surface(load("res://tests/manual_test_mesh.res"), 0)
+	for hit in [Vector3(1, 0, 0), Vector3(0, 0, 1), Vector3(0, -1, 0), Vector3(0.6, 0.0, -0.8)]:
+		var picked: Array[int] = painter.get_n_closest_vertices(sphere, Vector3.ZERO, hit, 5)
+		var closest: int = painter.get_closest_vertex(sphere, Vector3.ZERO, hit)
+		var far := 0.0
+		for i in picked:
+			far = maxf(far, sphere.get_vertex(i).distance_to(hit))
+		check(picked.size() == 5 and closest in picked and far < 0.3,
+			"sphere hit %s: 5 vertices incl. closest, max dist %.3f < 0.3" % [hit, far])
 
 	# n >= vertex count returns everything.
 	var r4: Array[int] = painter.get_n_closest_vertices(small, Vector3.ZERO, Vector3.ZERO, 10)
 	check(_sorted(r4) == [0, 1, 2, 3, 4, 5], "n > vertex count returns all (got %s)" % [r4])
 
-	# get_closest_vertex is not affected by B1.
+	# get_closest_vertex never had B1.
 	check(painter.get_closest_vertex(small, Vector3.ZERO, Vector3(0.31, 0, 0)) == 3,
 		"get_closest_vertex small mesh -> 3")
 	painter.free()
