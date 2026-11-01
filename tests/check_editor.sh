@@ -106,9 +106,14 @@ else
 	new="$(LC_ALL=C comm -13 "$LINT_BASELINE" "$LINT_CURRENT")"
 	gone="$(LC_ALL=C comm -23 "$LINT_BASELINE" "$LINT_CURRENT")"
 	echo "$(wc -l <"$LINT_CURRENT") warnings (baseline $(wc -l <"$LINT_BASELINE"))"
+	# Missing warnings fail too: if the lint goes blind (e.g. a Godot version
+	# ignores the override), "fewer warnings" must not pass silently. When a
+	# code change really removes warnings, update the baseline in that commit.
 	if [ -n "$gone" ]; then
-		echo "no longer reported (update the baseline with UPDATE_LINT_BASELINE=1):"
+		echo "MISSING warnings (fixed by a code change? then rerun with UPDATE_LINT_BASELINE=1;"
+		echo "otherwise the lint may not be seeing them on this Godot version):"
 		echo "$gone" | sed 's/^/  - /'
+		status=1
 	fi
 	if [ -n "$new" ]; then
 		echo "NEW warnings:"
