@@ -133,8 +133,10 @@ func stop_paint() -> void:
 		pre_mat = VERTEX_COLOR
 		mesh_i.set_surface_override_material(0, pre_mat)
 	
-	mesh_i.set_meta("_edit_lock_", false)
-	
+	# The editor treats a node as locked whenever this meta exists (has_meta),
+	# whatever its value, so it must be removed, not set to false.
+	mesh_i.remove_meta("_edit_lock_")
+
 	# legacy - remove static body children
 	#for c in mesh_i.get_children():
 	#	c.queue_free()
