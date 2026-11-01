@@ -159,7 +159,8 @@ func start_paint(event: InputEvent) -> void:
 		#print(click_location)
 		var mode := selected_mode()
 		var had_mode := mesh_paint_mode(mesh_i)
-		active_mdt.create_from_surface(mesh_i.mesh, 0)
+		if not load_mesh_for_paint(mesh_i):
+			return
 		if had_mode == NONE and mode == PaintMode.NORMAL \
 				and active_mdt.get_format() & Mesh.ARRAY_FORMAT_COLOR:
 			# Existing (e.g. imported) vertex colors: read them as multiply-style
@@ -172,6 +173,20 @@ func start_paint(event: InputEvent) -> void:
 		prepare_paint_material(mesh_i, mode)
 		process_move(event)
 		click_active = true
+
+# Load `mi`'s first surface into active_mdt for painting. MeshDataTool only
+# works on an ArrayMesh; for anything else (built-in PlaneMesh, BoxMesh, ...)
+# or a failed load, the stale data from the previously painted mesh must not
+# be written into this one (it used to replace e.g. a plane with a rock), so
+# clear it, leave the mesh untouched and say why in the dock.
+func load_mesh_for_paint(mi: MeshInstance3D) -> bool:
+	active_mdt.clear()
+	if mi.mesh is ArrayMesh and active_mdt.create_from_surface(mi.mesh, 0) == OK:
+		return true
+	active_mdt.clear()
+	var kind := mi.mesh.get_class() if mi.mesh else "no mesh"
+	show_hint("\"%s\" uses a %s, which can't be painted (only imported meshes / ArrayMesh). Nothing was changed." % [mi.name, kind])
+	return false
 
 # Meshes without a color array (e.g. imported .glb rocks) would get BLACK for
 # every vertex the brush doesn't touch (MeshDataTool's default), so start them
