@@ -98,6 +98,7 @@ func test_instantiate_painter_scene() -> void:
 		test_ctrl_select(p3d)
 		test_paint_modes(p3d)
 		test_unpaintable_mesh(p3d)
+		test_eraser(p3d)
 	inst.queue_free()
 	await process_frame
 
@@ -497,6 +498,57 @@ func test_unpaintable_mesh(p3d: Node) -> void:
 	rock.free()
 	plane.free()
 	other.free()
+
+
+# F16: Shift+drag erases. Normal: coverage drops (texture shows again);
+# Multiply: back toward white. Same opacity and per-stroke cap as painting.
+func test_eraser(p3d: Node) -> void:
+	var covered := Color(1, 0, 0, 1)
+	check(_color4_close(p3d.blend_erase(covered, 1.0, true), Color(1, 0, 0, 0)), "F16: Normal, full erase -> no coverage")
+	check(_color4_close(p3d.blend_erase(covered, 0.5, true), Color(1, 0, 0, 0.5)), "F16: Normal, 50 % erase halves coverage")
+	check(_color4_close(p3d.blend_erase(Color(0.2, 0.2, 0.2, 1), 1.0, false), Color.WHITE), "F16: Multiply, full erase -> white")
+	check(_color4_close(p3d.blend_erase(Color(0.2, 0.2, 0.2, 1), 0.5, false), Color(0.6, 0.6, 0.6, 1)),
+		"F16: Multiply, 50 % erase moves halfway to white")
+
+	# Routing: Shift+press starts an erase stroke; a plain press paints.
+	var enable: CheckBox = p3d.get_node("../VBoxContainer/EnableCheckBox")
+	var cam := Camera3D.new()
+	root.add_child(cam)
+	var mi := _sphere_mi()
+	enable.button_pressed = true
+	p3d.set_target(mi)
+	var shift_press := _mouse_button(MOUSE_BUTTON_LEFT, true)
+	shift_press.shift_pressed = true
+	check(p3d.forward_3d_input(cam, shift_press) and p3d._erasing and p3d._stroke_down,
+		"F16: Shift+press is consumed and starts an erase stroke")
+	p3d.forward_3d_input(cam, _mouse_button(MOUSE_BUTTON_LEFT, false))
+	check(p3d.forward_3d_input(cam, _mouse_button(MOUSE_BUTTON_LEFT, true)) and not p3d._erasing,
+		"F16: a plain press paints again")
+	p3d.forward_3d_input(cam, _mouse_button(MOUSE_BUTTON_LEFT, false))
+	enable.button_pressed = false
+	p3d.set_target(null)
+
+	# Through apply_brush on a Normal-mode mesh: erase the painted vertex.
+	var option: OptionButton = p3d.get_node("../VBoxContainer/ModeRow/ModeOption")
+	var picker: ColorPicker = p3d.get_node("../VBoxContainer/ColorPicker")
+	var nmi := _sphere_mi(null, Color(1, 0, 0, 1))
+	p3d.prepare_paint_material(nmi, 1)
+	option.select(1)
+	p3d.mesh_i = nmi
+	p3d.load_mesh_for_paint(nmi)
+	p3d.begin_stroke_colors()
+	picker.color = Color(1, 1, 1, 1)
+	p3d._erasing = true
+	var v0: Array[int] = [0]
+	p3d.apply_brush(v0)
+	check(_vcolor(nmi, 0).a < 0.01 and _vcolor(nmi, 1).a > 0.99,
+		"F16: erasing in Normal removes the paint's coverage on the dabbed vertex only")
+	p3d._erasing = false
+	p3d.mesh_i = null
+	option.select(0)
+	cam.free()
+	mi.free()
+	nmi.free()
 
 
 func _sphere_mi(material: Material = null, colors: Color = Color(0, 0, 0, -1)) -> MeshInstance3D:
