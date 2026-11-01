@@ -100,6 +100,7 @@ func test_instantiate_painter_scene() -> void:
 		test_unpaintable_mesh(p3d)
 		test_eraser(p3d)
 		test_premultiplied_upgrade(p3d)
+		test_big_surfaces(p3d)
 	inst.queue_free()
 	await process_frame
 
@@ -572,6 +573,67 @@ func test_premultiplied_upgrade(p3d: Node) -> void:
 	check(not p3d.upgrade_straight_alpha(mdt) and _color4_close(mdt.get_vertex_color(0), Color(0.5, 0, 0, 0.5)),
 		"F17: premultiplied data is never upgraded twice")
 	old.free()
+
+
+# F18: big surfaces. 24-bit depth decoding, the fast nearest-vertex search
+# (must match brute force), and gap filling between far-apart dabs.
+func test_big_surfaces(p3d: Node) -> void:
+	var dist := 1234567  # some 24-bit value
+	var px := Color(((dist >> 16) & 255) / 255.0, ((dist >> 8) & 255) / 255.0, (dist & 255) / 255.0)
+	check(absf(p3d.decode_depth(px) - dist / 16777215.0) < 1e-9, "F18: 24-bit depth decodes exactly")
+	check(p3d.decode_depth(Color(1, 1, 1)) < 0.0 and p3d.decode_depth(Color(0, 0, 0)) < 0.0,
+		"F18: far plane (all 255) and empty (all 0) pixels are misses")
+
+	var pm := PlaneMesh.new()
+	pm.subdivide_width = 30
+	pm.subdivide_depth = 30
+	var mdt := MeshDataTool.new()
+	mdt.create_from_surface(p3d.primitive_to_array_mesh(pm), 0)
+	var xf := Transform3D(Basis(Vector3.UP, 0.4).scaled(Vector3(40, 1, 25)), Vector3(3, 0, -2))
+	var world: PackedVector3Array = p3d.world_vertices(mdt, xf)
+	var same := true
+	for trial in 20:
+		var point := Vector3(randf_range(-40, 40), randf_range(-2, 2), randf_range(-25, 25))
+		var n: int = [1, 5, 30, 200][trial % 4]
+		var fast: Array[int] = p3d.nearest_vertices(world, point, n)
+		var dists: Array = []
+		for v in world.size():
+			dists.append([world[v].distance_squared_to(point), v])
+		dists.sort_custom(func(x, y): return x[0] < y[0])
+		var kth: float = dists[n - 1][0]
+		var ok_set: bool = fast.size() == n
+		for v in fast:
+			if world[v].distance_squared_to(point) > kth + 1e-4:
+				ok_set = false
+		same = same and ok_set
+	check(same, "F18: nearest_vertices matches a brute-force search (20 random points, n up to 200)")
+
+	# Gap filling: previous dab at A, now at B far away; vertices near the
+	# midpoint must be painted too.
+	var plane_mi := MeshInstance3D.new()
+	var am: ArrayMesh = p3d.primitive_to_array_mesh(pm)
+	plane_mi.mesh = am
+	plane_mi.transform = xf
+	root.add_child(plane_mi)
+	p3d.mesh_i = plane_mi
+	p3d.load_mesh_for_paint(plane_mi)
+	p3d._stroke_world = p3d.world_vertices(p3d.active_mdt, plane_mi.global_transform)
+	var a_pt := xf * Vector3(-0.8, 0, 0)
+	var b_pt := xf * Vector3(0.8, 0, 0)
+	p3d._last_hit = Vector3(INF, INF, INF)
+	p3d.brush_size = 5
+	p3d.stroke_dab_vertices(a_pt)
+	var dab: Array[int] = p3d.stroke_dab_vertices(b_pt)
+	var mid := a_pt.lerp(b_pt, 0.5)
+	var nearest_mid := INF
+	for v in dab:
+		nearest_mid = minf(nearest_mid, p3d._stroke_world[v].distance_to(mid))
+	var spacing := 80.0 / 31.0
+	check(nearest_mid < spacing, "F18: a dab far from the previous one also paints in between (nearest to midpoint %.1f < spacing %.1f)" % [nearest_mid, spacing])
+	p3d.mesh_i = null
+	p3d._last_hit = Vector3(INF, INF, INF)
+	p3d.set_brush_size()
+	plane_mi.free()
 
 
 func _sphere_mi(material: Material = null, colors: Color = Color(0, 0, 0, -1)) -> MeshInstance3D:
