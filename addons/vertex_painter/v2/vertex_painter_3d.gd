@@ -50,6 +50,13 @@ var _ctrl_select_down := false
 var _erasing := false
 # The mesh WE put an editor lock on (null if none). See _update_paint_lock().
 var _locked_mesh: MeshInstance3D = null
+# The mesh WE added PAINT_LAYER to (null if none). See _update_paint_lock().
+var _layered_mesh: MeshInstance3D = null
+# Render layer 20, reserved for the depth readback while painting: the target
+# carries it and MouseCamera3D renders only it, so other meshes (in front of or
+# behind the target) can't give a hit point off the target, which used to
+# paint the target's vertices nearest to that point, i.e. on its edge.
+const PAINT_LAYER := 1 << 19
 # Dock hint for an instanced scene whose mesh can't be painted yet.
 var _hint_label: Label
 var _editable_button: Button
@@ -394,18 +401,31 @@ func _update_paint_lock(refresh_gizmo := true) -> void:
 	if is_node_ready() and is_inside_tree() and enable_check_box.button_pressed \
 			and is_instance_valid(target):
 		want = target
-	if want == _locked_mesh:
+	if want == _locked_mesh and want == _layered_mesh:
 		return
 	var changed := _release_paint_lock()
 	if want != null and not want.has_meta("_edit_lock_"):
 		want.set_meta("_edit_lock_", true)
 		_locked_mesh = want
 		changed = true
+	# The depth layer follows the same rules: only added when missing, and only
+	# removed if we added it. If the user already uses layer 20 on this mesh,
+	# it simply stays.
+	if want != null:
+		_layered_mesh = want
+		if want.layers & PAINT_LAYER:
+			_layered_mesh = null
+		else:
+			want.layers |= PAINT_LAYER
 	if changed and refresh_gizmo:
 		_refresh_editor_gizmo()
 
-# Removes our lock, if any. Returns true when a lock was actually removed.
+# Removes our lock and our depth layer, if any. Returns true when a lock was
+# actually removed (the gizmo then needs a refresh; the layer doesn't).
 func _release_paint_lock() -> bool:
+	if is_instance_valid(_layered_mesh):
+		_layered_mesh.layers &= ~PAINT_LAYER
+	_layered_mesh = null
 	var removed := false
 	if is_instance_valid(_locked_mesh) and _locked_mesh.has_meta("_edit_lock_"):
 		_locked_mesh.remove_meta("_edit_lock_")
@@ -429,7 +449,8 @@ func _refresh_editor_gizmo() -> void:
 # before writing a scene file: lift our lock so it is never saved into the
 # .tscn, and put it back on the next frame (after the synchronous save).
 func before_save() -> void:
-	if _release_paint_lock():
+	var had_layer := _layered_mesh != null
+	if _release_paint_lock() or had_layer:
 		_update_paint_lock.call_deferred(false)
 
 func _on_enable_check_box_toggled(_enabled: bool) -> void:
@@ -862,6 +883,12 @@ func set_brush_size() -> void:
 
 func _ready() -> void:
 	enable_check_box.toggled.connect(_on_enable_check_box_toggled)
+	# The depth readback sees only the paint target (see PAINT_LAYER); its
+	# screen quad must be on that layer too, to be drawn at all.
+	mouse_camera_3d.cull_mask = PAINT_LAYER
+	var quad := mouse_camera_3d.get_node_or_null("ScreenQuad") as VisualInstance3D
+	if quad:
+		quad.layers = PAINT_LAYER
 	_setup_color_picker()
 	_build_brush_ui()
 	_build_hint_ui()
