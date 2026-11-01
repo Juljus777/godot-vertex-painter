@@ -128,20 +128,19 @@ func _paint_probe(p3d: Node, view_cam: Camera3D) -> bool:
 		used != null and used.vertex_color_use_as_albedo, used != null and used.albedo_texture == tex,
 		not original.vertex_color_use_as_albedo, "PASS" if mat_ok else "FAIL"])
 
-	# F7: "Pick Color from Mesh" on the spot just painted red takes red back,
-	# turns itself off, and paints nothing.
+	# F9: Alt+click on the spot just painted red takes red back (eyedropper)
+	# and paints nothing.
 	picker.color = Color.WHITE
-	var pick_button: Button = painter.get_node("VBoxContainer/PickColorButton")
-	pick_button.button_pressed = true
 	var colors_before = rock.mesh.surface_get_arrays(0)[Mesh.ARRAY_COLOR]
-	p3d.forward_3d_input(view_cam, press)
+	var alt_press := press.duplicate() as InputEventMouseButton
+	alt_press.alt_pressed = true
+	p3d.forward_3d_input(view_cam, alt_press)
 	for i in 6:
 		await get_tree().process_frame
 	p3d.forward_3d_input(view_cam, release)
-	var pick_ok: bool = picker.color.is_equal_approx(Color(1, 0, 0)) and not pick_button.button_pressed \
-		and rock.mesh.surface_get_arrays(0)[Mesh.ARRAY_COLOR] == colors_before
-	print("PICK_PROBE picked=%s button_off=%s mesh_unchanged=%s %s" % [picker.color,
-		not pick_button.button_pressed, rock.mesh.surface_get_arrays(0)[Mesh.ARRAY_COLOR] == colors_before,
+	var unchanged: bool = rock.mesh.surface_get_arrays(0)[Mesh.ARRAY_COLOR] == colors_before
+	var pick_ok: bool = picker.color.is_equal_approx(Color(1, 0, 0)) and unchanged
+	print("PICK_PROBE alt_click picked=%s mesh_unchanged=%s %s" % [picker.color, unchanged,
 		"PASS" if pick_ok else "FAIL"])
 
 	enable.button_pressed = false
