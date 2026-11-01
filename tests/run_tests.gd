@@ -95,6 +95,7 @@ func test_instantiate_painter_scene() -> void:
 		await test_paint_lock(p3d)
 		test_paint_material(p3d)
 		test_brush_controls(p3d)
+		test_ctrl_select(p3d)
 	inst.queue_free()
 	await process_frame
 
@@ -382,6 +383,72 @@ func test_get_n_closest_vertices() -> void:
 	check(cols[0] == Color.RED and cols[1] == Color.WHITE and cols[cols.size() - 1] == Color.WHITE,
 		"F6: colorless mesh -> unpainted vertices stay white (not MeshDataTool's black)")
 	painter2.free()
+
+
+# F8: the plugin now receives ALL 3D viewport input (so Ctrl+click works with
+# nothing selected). With painting off, nothing may be swallowed. Plus the
+# Ctrl+click ray picking helpers (the full flow runs in the editor probe).
+func test_ctrl_select(p3d: Node) -> void:
+	var enable: CheckBox = p3d.get_node("../VBoxContainer/EnableCheckBox")
+	var cam := Camera3D.new()
+	root.add_child(cam)
+	var mi := MeshInstance3D.new()
+	mi.mesh = BoxMesh.new()
+	root.add_child(mi)
+	enable.button_pressed = false
+	for t in [null, mi]:
+		p3d.set_target(t)
+		var events: Array[InputEvent] = [_mouse_button(MOUSE_BUTTON_LEFT, true),
+			_mouse_button(MOUSE_BUTTON_LEFT, false), _mouse_button(MOUSE_BUTTON_RIGHT, true),
+			_mouse_motion(true), _mouse_motion(false)]
+		var ctrl_click := _mouse_button(MOUSE_BUTTON_LEFT, true)
+		ctrl_click.ctrl_pressed = true
+		events.append(ctrl_click)
+		var swallowed := 0
+		for ev in events:
+			if p3d.forward_3d_input(cam, ev):
+				swallowed += 1
+		check(swallowed == 0, "F8: painting off, target=%s -> all %d events pass to the editor" % [t, events.size()])
+	p3d.set_target(null)
+
+	# Ray picking: nearest of two meshes along the ray; triangles, not just boxes.
+	var scene := Node3D.new()
+	root.add_child(scene)
+	var near := MeshInstance3D.new()
+	near.name = "Near"
+	near.mesh = SphereMesh.new()
+	near.position = Vector3(0, 0, -3)
+	var far := MeshInstance3D.new()
+	far.name = "Far"
+	far.mesh = SphereMesh.new()
+	far.position = Vector3(0, 0, -6)
+	far.scale = Vector3(3, 3, 3)
+	scene.add_child(near)
+	scene.add_child(far)
+	var o := Vector3.ZERO
+	check(p3d.mesh_under_ray(scene, o, Vector3(0, 0, -1)) == near, "F8: ray picks the nearer mesh")
+	# Through the near sphere's bounding-box corner (outside the sphere itself)
+	# and on into the big far sphere: only an exact triangle test gets this right.
+	check(p3d.mesh_under_ray(scene, o, Vector3(0.45, 0.45, -3).normalized()) == far,
+		"F8: a ray through the near sphere's box corner (missing the sphere) hits the far one")
+	check(p3d.mesh_under_ray(scene, o, Vector3(0, 1, 0)) == null, "F8: ray into empty space -> nothing")
+	near.hide()
+	check(p3d.mesh_under_ray(scene, o, Vector3(0, 0, -1)) == far, "F8: hidden meshes are ignored")
+	scene.free()
+
+	# Selectable node: instanced scene root unless its children are editable.
+	var level: Node3D = Node3D.new()
+	root.add_child(level)
+	var rock: Node = load("res://tests/instanced_rock.tscn").instantiate()
+	level.add_child(rock)
+	rock.owner = level
+	var rock_mesh: Node = rock.get_node("RockMesh")
+	check(p3d.selectable_node_for(rock_mesh, level) == rock, "F8: mesh in a non-editable instance -> selects the instance")
+	level.set_editable_instance(rock, true)
+	check(p3d.selectable_node_for(rock_mesh, level) == rock_mesh, "F8: editable instance -> selects the mesh itself")
+	level.free()
+	cam.free()
+	mi.free()
 
 
 func _color_close(a: Color, b: Color) -> bool:
