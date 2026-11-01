@@ -1,3 +1,2 @@
 res://addons/vertex_painter/v2/vertex_painter_3d.gd: The function "get_editor_viewport_3d()" is a static function but was called from an instance. Instead, it should be directly called from the type: "EditorInterface.get_editor_viewport_3d()".
-res://addons/vertex_painter/v2/vertex_painter_3d.gd: The local variable "changes" is declared but never used in the block. If this is intended, prefix it with an underscore: "_changes".
 res://addons/vertex_painter/v2/vertex_painter_3d.gd: The parameter "event" is never used in the function "process_move()". If this is intended, prefix it with an underscore: "_event".
