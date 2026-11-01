@@ -16,7 +16,8 @@ https://github.com/bikemurt/godot-vertex-painter/assets/23486102/fea58b3f-8b71-4
 ---
 
 **Godot Versions Tested**
-- v4.4.1 stable: automated checks on the `godot-4.4` branch, see [docs/verification](docs/verification/)
+- v4.5.2 stable: automated checks on the `godot-4.5` branch, see [docs/verification](docs/verification/)
+- v4.4.1 stable: automated checks on the `godot-4.4` branch
 - v4.3 stable: automated checks on the `godot-4.3` branch
 - v4.2.2 stable: automated checks on the `godot-4.2` branch
 - v4.3.5 dev release
