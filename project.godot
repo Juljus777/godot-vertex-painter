@@ -1,0 +1,17 @@
+; Engine configuration file.
+; Dev/test project for the vertex_painter addon. Not shipped (see .gitattributes).
+
+config_version=5
+
+[application]
+
+config/name="Vertex Painter Dev"
+config/features=PackedStringArray("4.2", "Forward Plus")
+
+[editor_plugins]
+
+enabled=PackedStringArray("res://addons/vertex_painter/plugin.cfg")
+
+[rendering]
+
+renderer/rendering_method="forward_plus"

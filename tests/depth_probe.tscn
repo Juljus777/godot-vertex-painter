@@ -1,0 +1,20 @@
+[gd_scene load_steps=5 format=3]
+
+[ext_resource type="Script" path="res://tests/depth_probe.gd" id="1_probe"]
+[ext_resource type="PackedScene" path="res://addons/vertex_painter/v2/vertex_painter.tscn" id="2_painter"]
+
+[sub_resource type="QuadMesh" id="QuadMesh_target"]
+size = Vector2(20, 20)
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_target"]
+albedo_color = Color(0.5, 0.5, 0.5, 1)
+
+[node name="DepthProbe" type="Node3D"]
+script = ExtResource("1_probe")
+
+[node name="VertexPainter" parent="." instance=ExtResource("2_painter")]
+
+[node name="Target" type="MeshInstance3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, -7)
+mesh = SubResource("QuadMesh_target")
+surface_material_override/0 = SubResource("StandardMaterial3D_target")
