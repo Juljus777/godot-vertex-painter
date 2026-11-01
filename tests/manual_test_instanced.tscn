@@ -1,0 +1,29 @@
+[gd_scene load_steps=5 format=3]
+
+[ext_resource type="PackedScene" path="res://tests/instanced_rock.tscn" id="1_vnbsp"]
+
+[sub_resource type="ProceduralSkyMaterial" id="ProceduralSkyMaterial_bgy8p"]
+
+[sub_resource type="Sky" id="Sky_cnuxt"]
+sky_material = SubResource("ProceduralSkyMaterial_bgy8p")
+
+[sub_resource type="Environment" id="Environment_xm2g4"]
+background_mode = 2
+sky = SubResource("Sky_cnuxt")
+
+[node name="ManualTestInstanced" type="Node3D"]
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+environment = SubResource("Environment_xm2g4")
+
+[node name="DirectionalLight3D" type="DirectionalLight3D" parent="."]
+transform = Transform3D(0.866025, -0.383022, 0.321394, 0, 0.642788, 0.766044, -0.5, -0.663414, 0.55667, 0, 0, 0)
+
+[node name="Camera3D" type="Camera3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 1.5, 1.5, 6)
+
+[node name="RockA" type="Node3D" parent="." instance=ExtResource("1_vnbsp")]
+transform = Transform3D(0.795384, -0.03618, 1.38782, 0.250191, 0.749711, -0.123844, -0.971238, 0.417866, 0.567525, -1.2, 0, 0)
+
+[node name="RockB" type="Node3D" parent="." instance=ExtResource("1_vnbsp")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 2, 0, 0)

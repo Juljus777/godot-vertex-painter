@@ -39,10 +39,6 @@ text = "Enable Vertex Painting"
 layout_mode = 2
 edit_alpha = false
 color_mode = 1
-sampler_visible = false
-color_modes_visible = false
-sliders_visible = false
-presets_visible = false
 
 [node name="Label" type="Label" parent="VBoxContainer"]
 layout_mode = 2
