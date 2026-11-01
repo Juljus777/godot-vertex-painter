@@ -10,7 +10,7 @@
 size = Vector2(0.1, 0.1)
 
 [sub_resource type="ShaderMaterial" id="ShaderMaterial_yrme8"]
-render_priority = 0
+render_priority = 127
 shader = ExtResource("3_8jrka")
 shader_parameter/camera_far = 100000.0
 

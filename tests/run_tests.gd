@@ -258,6 +258,9 @@ func test_paint_layer(p3d: Node) -> void:
 	var cam: Camera3D = p3d.mouse_camera_3d
 	check(cam.cull_mask == bit and (cam.get_node("ScreenQuad").layers & bit) != 0,
 		"F19: the depth camera renders only the paint layer (and its own screen quad)")
+	var quad: MeshInstance3D = cam.get_node("ScreenQuad")
+	check(quad.get_surface_override_material(0).render_priority == Material.RENDER_PRIORITY_MAX,
+		"F20: the depth quad draws after every transparent material (e.g. the Normal paint overlay)")
 	var enable: CheckBox = p3d.get_node("../VBoxContainer/EnableCheckBox")
 	enable.button_pressed = false
 	p3d.set_target(a)
