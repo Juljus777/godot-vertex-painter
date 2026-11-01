@@ -96,6 +96,7 @@ func test_instantiate_painter_scene() -> void:
 		test_paint_material(p3d)
 		test_brush_controls(p3d)
 		test_ctrl_select(p3d)
+		test_paint_modes(p3d)
 	inst.queue_free()
 	await process_frame
 
@@ -452,6 +453,159 @@ func test_ctrl_select(p3d: Node) -> void:
 	level.free()
 	cam.free()
 	mi.free()
+
+
+func _sphere_mi(material: Material = null, colors: Color = Color(0, 0, 0, -1)) -> MeshInstance3D:
+	var arrays := SphereMesh.new().get_mesh_arrays()
+	if colors.a >= 0.0:
+		var c := PackedColorArray()
+		c.resize((arrays[Mesh.ARRAY_VERTEX] as PackedVector3Array).size())
+		c.fill(colors)
+		arrays[Mesh.ARRAY_COLOR] = c
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	if material:
+		mesh.surface_set_material(0, material)
+	var mi := MeshInstance3D.new()
+	mi.mesh = mesh
+	root.add_child(mi)
+	return mi
+
+
+func _vcolor(mi: MeshInstance3D, v: int) -> Color:
+	return (mi.mesh.surface_get_arrays(0)[Mesh.ARRAY_COLOR] as PackedColorArray)[v]
+
+
+func _color4_close(a: Color, b: Color) -> bool:
+	return _color_close(a, b) and absf(a.a - b.a) < 0.006
+
+
+# F13: paint modes. Multiply = texture x paint; Normal = paint covers the
+# texture by its alpha. Stored per mesh as its material setup.
+func test_paint_modes(p3d: Node) -> void:
+	const MUL := 0
+	const NRM := 1
+	var option: OptionButton = p3d.get_node_or_null("../VBoxContainer/ModeRow/ModeOption")
+	check(option != null and option.item_count == 2 and option.get_item_text(0) == "Multiply"
+		and option.get_item_text(1) == "Normal" and option.selected == MUL,
+		"F13: Mode dropdown (Multiply, Normal), Multiply by default")
+	if option == null:
+		return
+
+	# Normal-mode compositing: alpha = coverage, "over" per dab.
+	var clear := Color(1, 1, 1, 0)
+	var half_red: Color = p3d.blend_paint(clear, Color.RED, 0.5, true)
+	check(_color4_close(half_red, Color(1, 0, 0, 0.5)), "F13: Normal, 50 % red over nothing -> red at 50 % coverage")
+	check(_color4_close(p3d.blend_paint(half_red, Color.RED, 0.5, true), Color(1, 0, 0, 0.75)),
+		"F13: Normal, a second 50 % stroke -> 75 % coverage")
+	check(_color4_close(p3d.blend_paint(half_red, Color.BLUE, 1.0, true), Color(0, 0, 1, 1)),
+		"F13: Normal, 100 % opacity fully replaces")
+	check(_color4_close(p3d.blend_paint(Color.WHITE, Color.BLACK, 0.5, false), Color(0.5, 0.5, 0.5, 1)),
+		"F13: Multiply blend unchanged")
+
+	# Conversions and round trips.
+	for c in [Color.WHITE, Color(0.5, 0.5, 0.5), Color(0.8, 0.2, 0.1)]:
+		var n: Color = p3d.convert_color(c, MUL, NRM)
+		check(_color4_close(p3d.convert_color(n, NRM, MUL), c), "F13: Multiply->Normal->Multiply is exact for %s" % c)
+	check(p3d.convert_color(Color.WHITE, MUL, NRM).a == 0.0, "F13: white (unpainted) -> not covering in Normal")
+	for c in [Color(0.2, 0.4, 0.6, 1.0), Color(1, 1, 1, 0)]:
+		var m: Color = p3d.convert_color(c, NRM, MUL)
+		check(_color4_close(p3d.convert_color(m, MUL, NRM), c), "F13: Normal->Multiply->Normal exact for full/no coverage %s" % c)
+	check(_color4_close(p3d.convert_color(Color(0, 0, 0, 0.5), NRM, MUL), Color(0.5, 0.5, 0.5, 1)),
+		"F13: Normal->Multiply bakes partial coverage into the color (documented)")
+
+	# Material setup per mode; the original material is never modified.
+	var tex := GradientTexture2D.new()
+	var original := StandardMaterial3D.new()
+	original.albedo_texture = tex
+	var mi := _sphere_mi(original)
+	check(p3d.mesh_paint_mode(mi) == -1 and mi.get_surface_override_material(0) == null,
+		"F13: a never-painted mesh has no mode and nothing added")
+	p3d.set_target(mi)
+	check(mi.get_surface_override_material(0) == null and mi.get_meta_list().is_empty(),
+		"F13: selecting a never-painted mesh adds nothing")
+	check(p3d.prepare_paint_material(mi, NRM), "F13: Normal setup on a StandardMaterial3D")
+	var used := mi.get_surface_override_material(0) as StandardMaterial3D
+	check(used != null and used != original and used.next_pass == p3d.PAINT_OVERLAY
+		and not used.vertex_color_use_as_albedo and used.albedo_texture == tex and original.next_pass == null,
+		"F13: Normal = copy of the material (texture kept) + paint layer as next pass; original untouched")
+	check(p3d.mesh_paint_mode(mi) == NRM, "F13: mesh detected as Normal")
+	p3d.set_target(null)
+	mi.free()
+
+	var shader_mat := ShaderMaterial.new()
+	var smi := _sphere_mi(shader_mat)
+	check(p3d.prepare_paint_material(smi, NRM) and smi.get_surface_override_material(0) is ShaderMaterial
+		and smi.get_surface_override_material(0).next_pass == p3d.PAINT_OVERLAY,
+		"F13: Normal works on a ShaderMaterial too")
+	smi.free()
+	var chained := StandardMaterial3D.new()
+	chained.next_pass = StandardMaterial3D.new()
+	var cmi := _sphere_mi(chained)
+	cmi.name = "Chained"
+	check(not p3d.prepare_paint_material(cmi, NRM) and cmi.get_surface_override_material(0) == null,
+		"F13: a material that already has a next pass is left alone in Normal mode (and reported)")
+	cmi.free()
+	p3d.show_instance_hint(null, null)
+
+	# Converting a painted mesh: Multiply -> Normal -> Multiply (no undo manager
+	# in tests, so it applies directly; the editor probe checks undo).
+	var tex2 := GradientTexture2D.new()
+	var mat2 := StandardMaterial3D.new()
+	mat2.albedo_texture = tex2
+	var pmi := _sphere_mi(mat2, Color.WHITE)
+	var colors: PackedColorArray = pmi.mesh.surface_get_arrays(0)[Mesh.ARRAY_COLOR]
+	colors[0] = Color(0.5, 0.5, 0.5)
+	var arr := pmi.mesh.surface_get_arrays(0)
+	arr[Mesh.ARRAY_COLOR] = colors
+	var painted := ArrayMesh.new()
+	painted.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arr)
+	painted.surface_set_material(0, mat2)
+	pmi.mesh = painted
+	p3d.prepare_paint_material(pmi, MUL)
+	p3d.set_target(pmi)
+	check(option.selected == MUL, "F13: dropdown shows the selected mesh's mode (Multiply)")
+	option.select(NRM)
+	option.item_selected.emit(NRM)
+	var n_mat := pmi.get_surface_override_material(0) as StandardMaterial3D
+	check(p3d.mesh_paint_mode(pmi) == NRM and n_mat.next_pass == p3d.PAINT_OVERLAY
+		and not n_mat.vertex_color_use_as_albedo and n_mat.albedo_texture == tex2,
+		"F13: dropdown -> Normal converts the material (texture kept)")
+	check(_color4_close(_vcolor(pmi, 0), Color(0.5, 0.5, 0.5, 1)) and _color4_close(_vcolor(pmi, 1), Color(1, 1, 1, 0)),
+		"F13: ... painted grey -> covering grey, white -> clear")
+	option.select(MUL)
+	option.item_selected.emit(MUL)
+	var m_mat := pmi.get_surface_override_material(0) as StandardMaterial3D
+	check(p3d.mesh_paint_mode(pmi) == MUL and m_mat.vertex_color_use_as_albedo and m_mat.next_pass == null,
+		"F13: ... and back to Multiply")
+	check(_color4_close(_vcolor(pmi, 0), Color(0.5, 0.5, 0.5, 1)) and _color4_close(_vcolor(pmi, 1), Color.WHITE),
+		"F13: Multiply -> Normal -> Multiply round trip restores the colors")
+	p3d.set_target(null)
+	pmi.free()
+
+	# Old debug shader (LEGACY): kept until a mode is picked, then converted to
+	# the mesh's own material with the colors kept.
+	var own := StandardMaterial3D.new()
+	own.albedo_texture = tex2
+	var lmi := _sphere_mi(own, Color.WHITE)
+	lmi.name = "LegacyRock"
+	lmi.set_surface_override_material(0, p3d.VERTEX_COLOR)
+	check(p3d.mesh_paint_mode(lmi) == p3d.LEGACY, "F13: old debug shader detected")
+	p3d.set_target(lmi)
+	var hint: Label = p3d.get_node("../VBoxContainer/HintLabel")
+	check(option.selected == -1 and hint.visible and hint.text.contains("old debug shader"),
+		"F13: legacy mesh -> dock explains, dropdown shows no mode")
+	check(p3d.prepare_paint_material(lmi, MUL) and lmi.get_surface_override_material(0) == p3d.VERTEX_COLOR,
+		"F13: painting a legacy mesh keeps the debug shader until a mode is picked")
+	option.select(NRM)
+	option.item_selected.emit(NRM)
+	var l_mat := lmi.get_surface_override_material(0) as StandardMaterial3D
+	check(l_mat != null and l_mat.next_pass == p3d.PAINT_OVERLAY and l_mat.albedo_texture == tex2
+		and own.next_pass == null and not hint.visible,
+		"F13: picking Normal replaces the debug shader with the mesh's own material + paint layer")
+	p3d.set_target(null)
+	lmi.free()
+	option.select(MUL)
 
 
 func _color_close(a: Color, b: Color) -> bool:
