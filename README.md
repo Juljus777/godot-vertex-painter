@@ -53,7 +53,6 @@ https://github.com/bikemurt/godot-vertex-painter/assets/23486102/fea58b3f-8b71-4
 ## ⚠️ Limitations
 
 - Only imported meshes will work (or ArrayMesh, which have a clear_surfaces() method). Built-in shapes such as PlaneMesh are not supported yet.
-- Rotated and scaled meshes are supported.
 - Only the first surface (material slot) of a mesh is painted.
 
 ## 🏠 Links
