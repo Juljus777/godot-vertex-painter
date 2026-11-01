@@ -37,17 +37,11 @@ text = "Enable Vertex Painting"
 
 [node name="ColorPicker" type="ColorPicker" parent="VBoxContainer"]
 layout_mode = 2
-edit_alpha = false
 color_mode = 1
 
 [node name="Label" type="Label" parent="VBoxContainer"]
 layout_mode = 2
 text = "Brush Size:"
-
-[node name="BrushLineEdit" type="LineEdit" parent="VBoxContainer"]
-layout_mode = 2
-text = "5"
-select_all_on_focus = true
 
 [node name="ShowDebugCheckBox" type="CheckBox" parent="VBoxContainer"]
 auto_translate_mode = 1
@@ -88,5 +82,3 @@ layers = 2
 mesh = SubResource("SphereMesh_8olv6")
 surface_material_override/0 = SubResource("StandardMaterial3D_eghqw")
 
-[connection signal="focus_exited" from="VBoxContainer/BrushLineEdit" to="VertexPainter3D" method="_on_brush_line_edit_focus_exited"]
-[connection signal="text_submitted" from="VBoxContainer/BrushLineEdit" to="VertexPainter3D" method="_on_brush_line_edit_text_submitted"]
