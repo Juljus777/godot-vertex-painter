@@ -15,8 +15,3 @@ func set_screen_name(_screen: String) -> void:
 
 func _ready():
 	vertex_painter_3d.set_interface(editor_interface)
-
-func _on_enable_check_box_pressed():
-	if enable_check_box.button_pressed:
-		editor_interface.set_main_screen_editor("Script")
-		editor_interface.set_main_screen_editor("3D")

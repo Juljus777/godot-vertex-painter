@@ -99,5 +99,31 @@ func _run() -> void:
 	var kind := "miss(-INF)" if not is_finite(miss) else ("far" if nd_miss >= 0.9999 else "hit")
 	print("MISS_PROBE normalized=%.9f decoded=%s -> %s" % [nd_miss, str(miss), kind])
 
+	# F3: the REAL click_raycast2(), fed the way _forward_3d_gui_input() feeds
+	# it (a viewport camera + viewport-local mouse position). click_raycast2()
+	# reads back the previous UPDATE_ONCE render, so call it, let frames pass,
+	# then call it again (as consecutive paint events do).
+	var p3d := painter.get_node("VertexPainter3D")
+	var view_cam := Camera3D.new()
+	add_child(view_cam)
+	view_cam.global_position = Vector3(0, 0, 0)
+	view_cam.look_at(Vector3(0, 0, -1), Vector3.UP)
+	var plane_d := 7.0
+	target.global_position = Vector3(0, 0, -plane_d)
+	target.show()
+	p3d.view_camera = view_cam
+	p3d.view_mouse_pos = view_cam.get_viewport().get_visible_rect().size / 2.0
+	mouse_camera_3d.show()
+	p3d.click_raycast2()
+	for i in SETTLE_FRAMES:
+		await get_tree().process_frame
+	var point: Vector3 = p3d.click_raycast2()
+	var expected := Vector3(0, 0, -plane_d)
+	# 0.1: the 8-bit depth encoding resolves about 0.08 units at this range.
+	var hit_ok := point.is_finite() and point.distance_to(expected) <= 0.1
+	ok = ok and hit_ok
+	print("RAYCAST_PROBE expected=%s got=%s %s" % [expected, point, "PASS" if hit_ok else "FAIL"])
+	view_cam.free()
+
 	print("DEPTH_PROBE_RESULT %s" % ("PASS" if ok else "FAIL"))
 	get_tree().quit(0 if ok else 1)
