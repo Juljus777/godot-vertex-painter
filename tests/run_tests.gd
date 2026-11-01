@@ -144,6 +144,15 @@ func test_forward_3d_input(p3d: Node) -> void:
 		"F3: left release is consumed")
 	check(not p3d.click_active, "F3: release ends the stroke")
 
+	# F5: a press that misses the mesh still owns the drag until release, so the
+	# editor never sees a left-held drag without its press.
+	p3d.forward_3d_input(cam, _mouse_button(MOUSE_BUTTON_LEFT, true))
+	check(p3d.forward_3d_input(cam, _mouse_motion(true)),
+		"F5: drag after a (missed) press is consumed")
+	p3d.forward_3d_input(cam, _mouse_button(MOUSE_BUTTON_LEFT, false))
+	check(not p3d.forward_3d_input(cam, _mouse_motion(false)),
+		"F5: hover after release passes through again")
+
 	# A stroke whose release happened outside the viewport ends on the next
 	# motion event without the left button held.
 	p3d.click_active = true
