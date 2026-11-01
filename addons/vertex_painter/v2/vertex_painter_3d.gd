@@ -40,6 +40,13 @@ var _hint_label: Label
 var _editable_button: Button
 var _hint_root: Node = null
 var _hint_mesh: MeshInstance3D = null
+# Brush controls built in code (see _build_brush_ui()).
+var _opacity_slider: HSlider
+var _opacity_value: Label
+var _pick_button: Button
+# Vertex colors at the start of the current stroke. Opacity blends from these,
+# so going over the same spot within one stroke never exceeds the opacity.
+var _stroke_base := PackedColorArray()
 
 func set_interface(_editor_interface: EditorInterface) -> void:
 	editor_interface = _editor_interface
@@ -134,6 +141,7 @@ func start_paint(event: InputEvent) -> void:
 		#print(click_location)
 		active_mdt.create_from_surface(mesh_i.mesh, 0)
 		ensure_vertex_colors(active_mdt)
+		begin_stroke_colors()
 		mesh_i.mesh = ArrayMesh.new()
 		active_mdt.commit_to_surface(mesh_i.mesh)
 		prepare_paint_material(mesh_i)
@@ -279,7 +287,8 @@ func _exit_tree() -> void:
 # transform handling for it, so no edit lock is needed during a stroke.
 # Right/middle buttons, wheel and hover always pass through (camera navigation).
 func forward_3d_input(camera: Camera3D, event: InputEvent) -> bool:
-	if not enable_check_box.button_pressed or target == null:
+	var picking: bool = _pick_button != null and _pick_button.button_pressed
+	if not (enable_check_box.button_pressed or picking) or target == null:
 		return false
 
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
@@ -287,7 +296,9 @@ func forward_3d_input(camera: Camera3D, event: InputEvent) -> bool:
 		view_mouse_pos = event.position
 		mesh_i = target
 		_stroke_down = event.pressed
-		if event.pressed:
+		if event.pressed and picking:
+			_pick_color()  # coroutine; never paints
+		elif event.pressed:
 			start_paint(event)  # coroutine: continues after the depth readback
 		else:
 			stop_paint()
@@ -319,10 +330,52 @@ func paint() -> void:
 		if result2.is_finite():
 			var vertices := get_n_closest_vertices(active_mdt, mesh_i.global_transform, \
 				result2, brush_size)
-			for idx in vertices:
-				active_mdt.set_vertex_color(idx, color_picker.color)
-				mesh_i.mesh.clear_surfaces()
-				active_mdt.commit_to_surface(mesh_i.mesh)
+			apply_brush(vertices)
+
+# Snapshot of the colors before this stroke (see _stroke_base).
+func begin_stroke_colors() -> void:
+	_stroke_base.resize(active_mdt.get_vertex_count())
+	for v in active_mdt.get_vertex_count():
+		_stroke_base[v] = active_mdt.get_vertex_color(v)
+
+func brush_opacity() -> float:
+	return _opacity_slider.value / 100.0 if _opacity_slider else 1.0
+
+# Blend the picked color into `vertices` by the brush opacity, starting from
+# the colors they had before the stroke, then rebuild the mesh ONCE (it used
+# to be rebuilt after every single vertex).
+func apply_brush(vertices: Array[int]) -> void:
+	var paint_color: Color = color_picker.color
+	var opacity := brush_opacity()
+	for idx in vertices:
+		var base: Color = _stroke_base[idx] if idx < _stroke_base.size() else active_mdt.get_vertex_color(idx)
+		var blended := base.lerp(paint_color, opacity)
+		blended.a = base.a
+		active_mdt.set_vertex_color(idx, blended)
+	mesh_i.mesh.clear_surfaces()
+	active_mdt.commit_to_surface(mesh_i.mesh)
+
+# Color of the vertex nearest `world_point` (white if the mesh has no colors).
+func color_at(mi: MeshInstance3D, world_point: Vector3) -> Color:
+	var mdt := MeshDataTool.new()
+	if not mi.mesh is ArrayMesh or mdt.create_from_surface(mi.mesh, 0) != OK:
+		return Color.WHITE
+	if not (mdt.get_format() & Mesh.ARRAY_FORMAT_COLOR):
+		return Color.WHITE
+	var idx := get_closest_vertex(mdt, mi.global_transform, world_point)
+	return mdt.get_vertex_color(idx) if idx >= 0 else Color.WHITE
+
+# "Pick from mesh": take the color under the cursor instead of painting.
+# One-shot, like an eyedropper: the button turns itself off afterwards.
+func _pick_color() -> void:
+	mouse_camera_3d.show()
+	var hit: Vector3 = await click_raycast2()
+	mouse_camera_3d.hide()
+	if hit.is_finite() and is_instance_valid(target):
+		var picked := color_at(target, hit)
+		picked.a = 1.0
+		color_picker.color = picked
+	_pick_button.button_pressed = false
 
 func legacy_paint() -> void:
 	var result = click_raycast()
@@ -408,7 +461,40 @@ func set_brush_size() -> void:
 func _ready() -> void:
 	set_brush_size()
 	enable_check_box.toggled.connect(_on_enable_check_box_toggled)
+	_build_brush_ui()
 	_build_hint_ui()
+
+# Opacity slider and "Pick from mesh" button, placed right after the brush size.
+func _build_brush_ui() -> void:
+	var opacity_row := HBoxContainer.new()
+	opacity_row.name = "OpacityRow"
+	var opacity_label := Label.new()
+	opacity_label.text = "Opacity:"
+	_opacity_slider = HSlider.new()
+	_opacity_slider.name = "OpacitySlider"
+	_opacity_slider.min_value = 1
+	_opacity_slider.max_value = 100
+	_opacity_slider.step = 1
+	_opacity_slider.value = 100
+	_opacity_slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_opacity_slider.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	_opacity_slider.tooltip_text = "How much of the color each stroke applies. Lower values build up gradually over several strokes."
+	_opacity_value = Label.new()
+	_opacity_value.custom_minimum_size.x = 40
+	_opacity_slider.value_changed.connect(func(v: float): _opacity_value.text = "%d%%" % v)
+	_opacity_value.text = "100%"
+	opacity_row.add_child(opacity_label)
+	opacity_row.add_child(_opacity_slider)
+	opacity_row.add_child(_opacity_value)
+
+	_pick_button = Button.new()
+	_pick_button.name = "PickColorButton"
+	_pick_button.text = "Pick Color from Mesh"
+	_pick_button.toggle_mode = true
+	_pick_button.tooltip_text = "Then click the selected mesh in the 3D view to take the color under the cursor."
+
+	brush_line_edit.add_sibling(_pick_button)
+	brush_line_edit.add_sibling(opacity_row)
 
 func _build_hint_ui() -> void:
 	var box: VBoxContainer = $"../VBoxContainer"

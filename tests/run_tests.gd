@@ -94,6 +94,7 @@ func test_instantiate_painter_scene() -> void:
 		test_forward_3d_input(p3d)
 		await test_paint_lock(p3d)
 		test_paint_material(p3d)
+		test_brush_controls(p3d)
 	inst.queue_free()
 	await process_frame
 
@@ -381,6 +382,82 @@ func test_get_n_closest_vertices() -> void:
 	check(cols[0] == Color.RED and cols[1] == Color.WHITE and cols[cols.size() - 1] == Color.WHITE,
 		"F6: colorless mesh -> unpainted vertices stay white (not MeshDataTool's black)")
 	painter2.free()
+
+
+func _color_close(a: Color, b: Color) -> bool:
+	return absf(a.r - b.r) < 0.006 and absf(a.g - b.g) < 0.006 and absf(a.b - b.b) < 0.006
+
+
+# F7: full color picker, opacity (blends from the pre-stroke colors), and
+# pick-from-mesh.
+func test_brush_controls(p3d: Node) -> void:
+	var box := p3d.get_node("../VBoxContainer")
+	var picker: ColorPicker = box.get_node("ColorPicker")
+	check(picker.sliders_visible and picker.color_modes_visible and picker.presets_visible
+		and picker.sampler_visible, "F7: color picker shows sliders, modes, presets and eyedropper")
+	var slider: HSlider = box.get_node_or_null("OpacityRow/OpacitySlider")
+	var pick: Button = box.get_node_or_null("PickColorButton")
+	check(slider != null and pick != null and pick.toggle_mode, "F7: opacity slider and pick button exist")
+	if slider == null or pick == null:
+		return
+
+	# Opacity: 50 % twice within ONE stroke stays at 50 %; a new stroke builds on it.
+	var mi := MeshInstance3D.new()
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, SphereMesh.new().get_mesh_arrays())
+	mi.mesh = mesh
+	root.add_child(mi)
+	p3d.mesh_i = mi
+	p3d.active_mdt.create_from_surface(mesh, 0)
+	p3d.ensure_vertex_colors(p3d.active_mdt)
+	p3d.begin_stroke_colors()
+	picker.color = Color.BLACK
+	slider.value = 50
+	var v0: Array[int] = [0]
+	p3d.apply_brush(v0)
+	p3d.apply_brush(v0)
+	check(p3d.active_mdt.get_vertex_color(0).is_equal_approx(Color(0.5, 0.5, 0.5)),
+		"F7: 50%% opacity, same spot twice in one stroke -> 0.5 grey (got %s)" % p3d.active_mdt.get_vertex_color(0))
+	p3d.begin_stroke_colors()
+	p3d.apply_brush(v0)
+	check(p3d.active_mdt.get_vertex_color(0).is_equal_approx(Color(0.25, 0.25, 0.25)),
+		"F7: a second stroke builds on the first -> 0.25 grey")
+	check(p3d.active_mdt.get_vertex_color(1) == Color.WHITE, "F7: untouched vertices keep their color")
+	var committed: PackedColorArray = mi.mesh.surface_get_arrays(0)[Mesh.ARRAY_COLOR]
+	# Meshes store vertex colors as 8 bits per channel: compare within ~1/255.
+	check(_color_close(committed[0], Color(0.25, 0.25, 0.25)), "F7: the mesh is rebuilt with the blended color (got %s)" % committed[0])
+	slider.value = 100
+
+	# Pick from mesh: color of the vertex nearest a world point.
+	mi.global_transform = Transform3D(Basis().scaled(Vector3(2, 1, 3)), Vector3(5, 0, 0))
+	var world_v0: Vector3 = mi.global_transform * p3d.active_mdt.get_vertex(0)
+	check(_color_close(p3d.color_at(mi, world_v0), Color(0.25, 0.25, 0.25)),
+		"F7: color_at() returns the nearest vertex's color on a moved/scaled mesh")
+	var bare := MeshInstance3D.new()
+	var bare_mesh := ArrayMesh.new()
+	bare_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, SphereMesh.new().get_mesh_arrays())
+	bare.mesh = bare_mesh
+	root.add_child(bare)
+	check(p3d.color_at(bare, Vector3.ZERO) == Color.WHITE, "F7: a mesh without vertex colors picks white")
+
+	# Pick mode consumes the click even with painting disabled, and never paints.
+	var enable: CheckBox = box.get_node("EnableCheckBox")
+	enable.button_pressed = false
+	var cam := Camera3D.new()
+	root.add_child(cam)
+	p3d.set_target(mi)
+	pick.button_pressed = true
+	var before: PackedColorArray = mi.mesh.surface_get_arrays(0)[Mesh.ARRAY_COLOR]
+	check(p3d.forward_3d_input(cam, _mouse_button(MOUSE_BUTTON_LEFT, true)),
+		"F7: pick mode consumes the click (painting off)")
+	p3d.forward_3d_input(cam, _mouse_button(MOUSE_BUTTON_LEFT, false))
+	check(not p3d.click_active and mi.mesh.surface_get_arrays(0)[Mesh.ARRAY_COLOR] == before,
+		"F7: pick mode doesn't paint")
+	pick.button_pressed = false
+	p3d.set_target(null)
+	cam.free()
+	mi.free()
+	bare.free()
 
 
 # F6 (B3): painting shows on the mesh's own material instead of replacing it.

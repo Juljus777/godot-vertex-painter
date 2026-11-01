@@ -38,6 +38,9 @@ https://github.com/bikemurt/godot-vertex-painter/assets/23486102/fea58b3f-8b71-4
     - While painting is enabled, the mesh's move/rotate/scale gizmo is hidden and a lock icon shows next to it in the Scene tree. The plugin removes that lock when you untick the checkbox, select something else, or disable the plugin, and it is never saved into the scene.
     - Meshes inside an instanced scene (for example an imported `.glb`): selecting the instance shows a note and an **Enable Editable Children** button in the dock. Press it (undo with Ctrl+Z) and the mesh is selected, ready to paint. The painted mesh is then stored in your scene, per instance, and no longer follows re-imports of the `.glb`.
     - The paint shows on the mesh's own material: the plugin gives the surface a copy of its StandardMaterial3D with "Vertex Color > Use as Albedo" on, so the texture is multiplied by the paint (paint white = unchanged, grey = darker). Meshes without vertex colors start all white. A ShaderMaterial is left alone and only shows the paint if it reads `COLOR`.
+    - **Opacity** (dock slider): how much of the color each stroke applies. Going over the same spot within one stroke never exceeds it; each new stroke builds on the last, so a low opacity darkens gradually.
+    - **Pick Color from Mesh** (dock button): turn it on, then click the selected mesh to take the color under the cursor into the picker. It switches itself off after one pick. The picker's own eyedropper samples the screen instead (lit, shaded color).
+    - Vertex colors are stored with 8 bits per channel, so very fine opacity steps round to the nearest 1/255.
 
 ## ⚠️ Limitations
 
