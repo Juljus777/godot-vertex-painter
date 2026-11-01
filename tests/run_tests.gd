@@ -518,10 +518,24 @@ func test_brush_controls(p3d: Node) -> void:
 	var cam := Camera3D.new()
 	root.add_child(cam)
 	p3d.set_target(mi)
+	mi.global_transform = Transform3D(Basis(), Vector3(0, 0, -4))  # in front of the camera
+	var on_mesh := cam.unproject_position(mi.global_position)
 	var before: PackedColorArray = mi.mesh.surface_get_arrays(0)[Mesh.ARRAY_COLOR]
+
+	# F10: Alt+click off the selected mesh goes to the editor, whole drag
+	# included ("Emulate 3 Button Mouse" orbit), and starts no stroke.
+	var alt_off := _mouse_button(MOUSE_BUTTON_LEFT, true)
+	alt_off.alt_pressed = true
+	alt_off.position = Vector2(1, 1)
+	check(not p3d.forward_3d_input(cam, alt_off), "F10: Alt+click off the mesh passes through (orbit)")
+	check(not p3d.forward_3d_input(cam, _mouse_motion(true)), "F10: ... and its drag passes through")
+	check(not p3d.forward_3d_input(cam, _mouse_button(MOUSE_BUTTON_LEFT, false)), "F10: ... and its release")
+	check(not p3d._stroke_down and not p3d.click_active, "F10: no paint stroke from an Alt-orbit")
+
 	var alt_press := _mouse_button(MOUSE_BUTTON_LEFT, true)
 	alt_press.alt_pressed = true
-	check(p3d.forward_3d_input(cam, alt_press), "F9: Alt+click is consumed while painting")
+	alt_press.position = on_mesh
+	check(p3d.forward_3d_input(cam, alt_press), "F9/F10: Alt+click on the selected mesh is consumed (picks)")
 	check(not p3d._stroke_down, "F9: Alt+click doesn't start a paint stroke")
 	check(p3d.forward_3d_input(cam, _mouse_motion(true)), "F9: Alt+drag is consumed (keeps picking)")
 	check(p3d.forward_3d_input(cam, _mouse_button(MOUSE_BUTTON_LEFT, false)), "F9: its release is consumed")
