@@ -2,6 +2,18 @@
 extends Node3D
 
 const VERTEX_COLOR = preload("res://addons/vertex_painter/shaders/vertex_color.tres")
+# "Normal" paint mode layer: next pass of the mesh's material copy.
+const PAINT_OVERLAY = preload("res://addons/vertex_painter/shaders/paint_overlay.tres")
+
+# How a mesh shows its paint. Stored per mesh, as its material setup:
+# MULTIPLY = material copy with vertex_color_use_as_albedo (texture x paint);
+# NORMAL = material copy with PAINT_OVERLAY as next pass (paint covers the
+# texture by its alpha). NONE = not painted by this plugin.
+enum PaintMode { MULTIPLY, NORMAL }
+const NONE := -1
+# Painted by an older version: surface override = the debug VERTEX_COLOR shader
+# (shows only the vertex colors). Kept as is until a mode is picked for it.
+const LEGACY := 2
 
 # Emitted by the dock's "Enable Editable Children" button; the EditorPlugin
 # performs it as an undoable action and selects `mesh`.
@@ -53,6 +65,10 @@ var _pick_busy := false
 # Vertex colors at the start of the current stroke. Opacity blends from these,
 # so going over the same spot within one stroke never exceeds the opacity.
 var _stroke_base := PackedColorArray()
+# Paint mode dropdown (built in code) and the editor's undo manager (set by
+# the EditorPlugin; null in tests, then changes apply directly).
+var _mode_option: OptionButton
+var undo_redo: Object = null
 
 func set_interface(_editor_interface: EditorInterface) -> void:
 	editor_interface = _editor_interface
@@ -145,34 +161,97 @@ func start_paint(event: InputEvent) -> void:
 		return
 	if click_location.is_finite():
 		#print(click_location)
+		var mode := selected_mode()
+		var had_mode := mesh_paint_mode(mesh_i)
 		active_mdt.create_from_surface(mesh_i.mesh, 0)
-		ensure_vertex_colors(active_mdt)
+		if had_mode == NONE and mode == PaintMode.NORMAL \
+				and active_mdt.get_format() & Mesh.ARRAY_FORMAT_COLOR:
+			# Existing (e.g. imported) vertex colors: read them as multiply-style
+			# factors so white areas don't suddenly cover the texture.
+			_convert_mdt_colors(active_mdt, PaintMode.MULTIPLY, PaintMode.NORMAL)
+		ensure_vertex_colors(active_mdt, mode)
 		begin_stroke_colors()
 		mesh_i.mesh = ArrayMesh.new()
 		active_mdt.commit_to_surface(mesh_i.mesh)
-		prepare_paint_material(mesh_i)
+		prepare_paint_material(mesh_i, mode)
 		process_move(event)
 		click_active = true
 
 # Meshes without a color array (e.g. imported .glb rocks) would get BLACK for
 # every vertex the brush doesn't touch (MeshDataTool's default), so start them
-# all at white: the neutral value for a multiply-style paint like AO.
-func ensure_vertex_colors(mdt: MeshDataTool) -> void:
+# at the mode's "unpainted" value: white for Multiply (texture x 1), and fully
+# transparent for Normal (nothing covers the texture yet).
+func ensure_vertex_colors(mdt: MeshDataTool, mode: int = PaintMode.MULTIPLY) -> void:
 	if mdt.get_format() & Mesh.ARRAY_FORMAT_COLOR:
 		return
+	var start := Color(1, 1, 1, 0) if mode == PaintMode.NORMAL else Color.WHITE
 	for v in mdt.get_vertex_count():
-		mdt.set_vertex_color(v, Color.WHITE)
+		mdt.set_vertex_color(v, start)
 
-# B3: show the paint on the mesh's OWN material instead of swapping in the
-# debug vertex-color shader. For a BaseMaterial3D (what imported .glb meshes
-# use) the surface gets a copy with vertex_color_use_as_albedo, so the texture
-# is multiplied by the painted colors, in the editor and in game. The copy is
-# made once; later strokes reuse it. Returns false when the paint can't be
-# shown automatically (another material type); the dock then says so.
-func prepare_paint_material(mi: MeshInstance3D) -> bool:
+func selected_mode() -> int:
+	return _mode_option.selected if _mode_option else PaintMode.MULTIPLY
+
+# The paint mode a mesh is set up for, from its surface material; NONE if this
+# plugin hasn't painted it (so a never-painted mesh gets nothing added).
+func mesh_paint_mode(mi: MeshInstance3D) -> int:
+	var mat := mi.get_active_material(0)
+	if mat == null:
+		return NONE
+	if mat == VERTEX_COLOR:
+		return LEGACY
+	if mat.next_pass == PAINT_OVERLAY:
+		return PaintMode.NORMAL
+	if mat is BaseMaterial3D and (mat as BaseMaterial3D).vertex_color_use_as_albedo:
+		return PaintMode.MULTIPLY
+	return NONE
+
+# Vertex color conversion between modes.
+# Multiply -> Normal: white (= unchanged) becomes "not painted" (alpha 0); any
+# other color becomes fully covering paint of that color. Normal -> Multiply:
+# the paint color blended toward white by its coverage. Multiply -> Normal ->
+# Multiply is exact; Normal -> Multiply -> Normal is exact for fully covered or
+# unpainted vertices (partial coverage is baked into the color).
+func convert_color(c: Color, from: int, to: int) -> Color:
+	if from == to:
+		return c
+	if to == PaintMode.NORMAL:
+		var is_white := c.r >= 0.998 and c.g >= 0.998 and c.b >= 0.998
+		return Color(1, 1, 1, 0) if is_white else Color(c.r, c.g, c.b, 1)
+	return Color(lerpf(1.0, c.r, c.a), lerpf(1.0, c.g, c.a), lerpf(1.0, c.b, c.a), 1)
+
+func _convert_mdt_colors(mdt: MeshDataTool, from: int, to: int) -> void:
+	for v in mdt.get_vertex_count():
+		mdt.set_vertex_color(v, convert_color(mdt.get_vertex_color(v), from, to))
+
+# Show the paint on the mesh's OWN material (B3), set up for `mode`. The copy
+# is made once; later strokes reuse it. The original material is never
+# modified. Returns false when the paint can't be shown automatically; the
+# dock then says why.
+func prepare_paint_material(mi: MeshInstance3D, mode: int = PaintMode.MULTIPLY) -> bool:
 	var mat := mi.get_active_material(0)
 	if mat == VERTEX_COLOR:
-		return true  # painted with an older version of this plugin
+		return true  # legacy debug shader: kept until a mode is picked for it
+	if mode == PaintMode.NORMAL:
+		return _prepare_normal_material(mi, mat)
+	return _prepare_multiply_material(mi, mat)
+
+# NORMAL: a copy of the material (any type) with the paint layer as next pass.
+func _prepare_normal_material(mi: MeshInstance3D, mat: Material) -> bool:
+	if mat != null and mat.next_pass == PAINT_OVERLAY:
+		return true
+	if mat != null and mat.next_pass != null:
+		show_hint("\"%s\"'s material already has a next pass, so Normal mode can't add its paint layer. Use Multiply, or remove that next pass." % mi.name)
+		return false
+	var copy: Material = StandardMaterial3D.new() if mat == null else mat.duplicate()
+	if copy is BaseMaterial3D:
+		(copy as BaseMaterial3D).vertex_color_use_as_albedo = false
+	copy.next_pass = PAINT_OVERLAY
+	mi.set_surface_override_material(0, copy)
+	return true
+
+# MULTIPLY: for a BaseMaterial3D (what imported .glb meshes use) a copy with
+# vertex_color_use_as_albedo, so the texture is multiplied by the paint.
+func _prepare_multiply_material(mi: MeshInstance3D, mat: Material) -> bool:
 	if mat == null:
 		var plain := StandardMaterial3D.new()
 		plain.vertex_color_use_as_albedo = true
@@ -180,11 +259,13 @@ func prepare_paint_material(mi: MeshInstance3D) -> bool:
 		mi.set_surface_override_material(0, plain)
 		return true
 	if mat is BaseMaterial3D:
-		if (mat as BaseMaterial3D).vertex_color_use_as_albedo:
+		if (mat as BaseMaterial3D).vertex_color_use_as_albedo and mat.next_pass != PAINT_OVERLAY:
 			return true
 		var copy := mat.duplicate() as BaseMaterial3D
 		copy.vertex_color_use_as_albedo = true
 		copy.vertex_color_is_srgb = true  # color picker values are sRGB
+		if copy.next_pass == PAINT_OVERLAY:
+			copy.next_pass = null  # coming from Normal mode
 		mi.set_surface_override_material(0, copy)
 		return true
 	show_hint("\"%s\" uses a %s. The paint is stored in the mesh, but only shows if that material reads the vertex COLOR." % [mi.name, mat.get_class()])
@@ -222,6 +303,7 @@ func set_target(mesh: MeshInstance3D) -> void:
 		stop_paint()
 	target = mesh
 	_update_paint_lock()
+	_sync_mode_ui()
 
 # While "Enable Vertex Painting" is on, the edited mesh carries the editor's
 # _edit_lock_ meta: it is the only script-reachable way to hide a node's
@@ -462,13 +544,92 @@ func brush_opacity() -> float:
 func apply_brush(vertices: Array[int]) -> void:
 	var paint_color: Color = color_picker.color
 	var opacity := brush_opacity()
+	var normal := selected_mode() == PaintMode.NORMAL and is_instance_valid(mesh_i) \
+		and mesh_paint_mode(mesh_i) == PaintMode.NORMAL
 	for idx in vertices:
 		var base: Color = _stroke_base[idx] if idx < _stroke_base.size() else active_mdt.get_vertex_color(idx)
-		var blended := base.lerp(paint_color, opacity)
-		blended.a = base.a
-		active_mdt.set_vertex_color(idx, blended)
+		active_mdt.set_vertex_color(idx, blend_paint(base, paint_color, opacity, normal))
 	mesh_i.mesh.clear_surfaces()
 	active_mdt.commit_to_surface(mesh_i.mesh)
+
+# One dab. Multiply: move the factor toward the paint color (alpha untouched).
+# Normal: lay the paint over what's there ("over" compositing); alpha is how
+# much the paint covers the material underneath.
+func blend_paint(base: Color, color: Color, opacity: float, normal: bool) -> Color:
+	if not normal:
+		var blended := base.lerp(color, opacity)
+		blended.a = base.a
+		return blended
+	var a := opacity + base.a * (1.0 - opacity)
+	if a <= 0.0:
+		return Color(1, 1, 1, 0)
+	var keep := base.a * (1.0 - opacity)
+	return Color((color.r * opacity + base.r * keep) / a, (color.g * opacity + base.g * keep) / a,
+		(color.b * opacity + base.b * keep) / a, a)
+
+# Switch a painted mesh to `to`: convert its vertex colors and set up its
+# material, as one undoable editor action (direct when there's no undo
+# manager, e.g. in tests). A mesh painted with the old debug shader (LEGACY)
+# gets that override removed and its own material set up instead.
+func convert_mesh_mode(mi: MeshInstance3D, to: int) -> bool:
+	var from := mesh_paint_mode(mi)
+	if from == NONE or from == to or not mi.mesh is ArrayMesh:
+		return false
+	var old_mesh: Mesh = mi.mesh
+	var old_override: Material = mi.get_surface_override_material(0)
+	var mdt := MeshDataTool.new()
+	if mdt.create_from_surface(old_mesh, 0) != OK:
+		return false
+	if mdt.get_format() & Mesh.ARRAY_FORMAT_COLOR:
+		_convert_mdt_colors(mdt, PaintMode.MULTIPLY if from == LEGACY else from, to)
+	else:
+		ensure_vertex_colors(mdt, to)
+	var new_mesh := ArrayMesh.new()
+	mdt.commit_to_surface(new_mesh)
+	# Work out the new material on a stand-in so nothing changes before commit.
+	var probe := MeshInstance3D.new()
+	probe.mesh = new_mesh
+	probe.set_surface_override_material(0, null if from == LEGACY else old_override)
+	var ok := prepare_paint_material(probe, to)
+	var new_override: Material = probe.get_surface_override_material(0)
+	probe.free()
+	if not ok:
+		return false
+	if undo_redo:
+		undo_redo.create_action("Vertex Painter: switch paint mode")
+		undo_redo.add_do_property(mi, "mesh", new_mesh)
+		undo_redo.add_do_method(mi, "set_surface_override_material", 0, new_override)
+		undo_redo.add_undo_property(mi, "mesh", old_mesh)
+		undo_redo.add_undo_method(mi, "set_surface_override_material", 0, old_override)
+		undo_redo.commit_action()
+	else:
+		mi.mesh = new_mesh
+		mi.set_surface_override_material(0, new_override)
+	return true
+
+# Dropdown changed: convert the selected mesh if it's already painted another
+# way; otherwise the mode applies from its first stroke.
+func _on_mode_selected(index: int) -> void:
+	if is_instance_valid(target) and mesh_paint_mode(target) != NONE:
+		convert_mesh_mode(target, index)
+	_sync_mode_ui()
+
+# Show the selected mesh's mode in the dropdown (without converting), and a
+# note for meshes still on the old debug shader.
+func _sync_mode_ui() -> void:
+	if _mode_option == null:
+		return
+	var mode := mesh_paint_mode(target) if is_instance_valid(target) else NONE
+	if mode == PaintMode.MULTIPLY or mode == PaintMode.NORMAL:
+		_mode_option.select(mode)
+	elif mode == LEGACY:
+		_mode_option.select(-1)  # nothing selected, so picking either mode fires
+	elif _mode_option.selected == -1:
+		_mode_option.select(PaintMode.MULTIPLY)
+	if mode == LEGACY:
+		show_hint("\"%s\" still uses the old debug shader (vertex colors only, texture hidden). Pick a Mode to switch it to its own material; the colors are kept." % target.name)
+	elif _hint_label and _hint_label.text.contains("old debug shader"):
+		show_hint("")
 
 # Color of the vertex nearest `world_point` (white if the mesh has no colors).
 func color_at(mi: MeshInstance3D, world_point: Vector3) -> Color:
@@ -628,6 +789,24 @@ func _build_brush_ui() -> void:
 	var size_label: Label = $"../VBoxContainer/Label"
 	size_label.add_sibling(shortcuts)
 	size_label.add_sibling(row)
+
+	# Paint mode, above "Brush Size:".
+	var mode_row := HBoxContainer.new()
+	mode_row.name = "ModeRow"
+	var mode_label := Label.new()
+	mode_label.text = "Mode:"
+	_mode_option = OptionButton.new()
+	_mode_option.name = "ModeOption"
+	_mode_option.add_item("Multiply", PaintMode.MULTIPLY)
+	_mode_option.add_item("Normal", PaintMode.NORMAL)
+	_mode_option.select(PaintMode.MULTIPLY)
+	_mode_option.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_mode_option.tooltip_text = "Multiply: the texture is multiplied by the paint (white = unchanged).\nNormal: the paint covers the texture, by the opacity (A slider).\nStored per mesh; switching a painted mesh converts its paint (undoable)."
+	_mode_option.item_selected.connect(_on_mode_selected)
+	mode_row.add_child(mode_label)
+	mode_row.add_child(_mode_option)
+	size_label.add_sibling(mode_row)
+	size_label.get_parent().move_child(mode_row, size_label.get_index())
 
 func _build_hint_ui() -> void:
 	var box: VBoxContainer = $"../VBoxContainer"
