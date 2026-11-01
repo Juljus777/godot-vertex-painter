@@ -93,6 +93,7 @@ func test_instantiate_painter_scene() -> void:
 		check(p3d.brush_size == 5, "brush size slider defaults to 5")
 		test_forward_3d_input(p3d)
 		await test_paint_lock(p3d)
+		await test_paint_layer(p3d)
 		test_paint_material(p3d)
 		test_brush_controls(p3d)
 		test_ctrl_select(p3d)
@@ -240,6 +241,54 @@ func test_paint_lock(p3d: Node) -> void:
 	check(a.has_meta("_edit_lock_"), "F4: painter re-entering the tree re-applies it")
 
 	enable.button_pressed = false
+	p3d.set_target(null)
+	a.free()
+	b.free()
+
+
+# F19: the depth readback renders only the paint target, which carries
+# PAINT_LAYER while painting applies to it. Same lifecycle as the F4 lock:
+# added only when missing, removed only if we added it, never saved.
+func test_paint_layer(p3d: Node) -> void:
+	var bit: int = p3d.PAINT_LAYER
+	var a := MeshInstance3D.new()
+	var b := MeshInstance3D.new()
+	root.add_child(a)
+	root.add_child(b)
+	var cam: Camera3D = p3d.mouse_camera_3d
+	check(cam.cull_mask == bit and (cam.get_node("ScreenQuad").layers & bit) != 0,
+		"F19: the depth camera renders only the paint layer (and its own screen quad)")
+	var enable: CheckBox = p3d.get_node("../VBoxContainer/EnableCheckBox")
+	enable.button_pressed = false
+	p3d.set_target(a)
+	check(a.layers == 1, "F19: toggle off -> no paint layer")
+	enable.button_pressed = true
+	check(a.layers == 1 | bit, "F19: toggle on -> target gets the paint layer")
+	p3d.set_target(b)
+	check(a.layers == 1 and b.layers == 1 | bit, "F19: selecting another mesh moves the layer")
+	enable.button_pressed = false
+	check(b.layers == 1, "F19: toggle off -> layer removed")
+
+	enable.button_pressed = true
+	p3d.before_save()
+	check(b.layers == 1, "F19: layer lifted for saving")
+	await process_frame
+	check(b.layers == 1 | bit, "F19: layer restored on the next frame after saving")
+
+	var parent := p3d.get_parent()
+	parent.remove_child(p3d)
+	check(b.layers == 1, "F19: painter leaving the tree removes the layer")
+	parent.add_child(p3d)
+	check(b.layers == 1 | bit, "F19: painter re-entering the tree re-applies it")
+
+	# The user's own use of layer 20 is left alone.
+	enable.button_pressed = false
+	a.layers = 1 | bit
+	enable.button_pressed = true
+	p3d.set_target(a)
+	enable.button_pressed = false
+	check(a.layers == 1 | bit, "F19: a mesh already on layer 20 keeps it")
+
 	p3d.set_target(null)
 	a.free()
 	b.free()
