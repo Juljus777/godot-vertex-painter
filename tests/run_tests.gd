@@ -99,6 +99,7 @@ func test_instantiate_painter_scene() -> void:
 		test_paint_modes(p3d)
 		test_unpaintable_mesh(p3d)
 		test_eraser(p3d)
+		test_premultiplied_upgrade(p3d)
 	inst.queue_free()
 	await process_frame
 
@@ -504,8 +505,10 @@ func test_unpaintable_mesh(p3d: Node) -> void:
 # Multiply: back toward white. Same opacity and per-stroke cap as painting.
 func test_eraser(p3d: Node) -> void:
 	var covered := Color(1, 0, 0, 1)
-	check(_color4_close(p3d.blend_erase(covered, 1.0, true), Color(1, 0, 0, 0)), "F16: Normal, full erase -> no coverage")
-	check(_color4_close(p3d.blend_erase(covered, 0.5, true), Color(1, 0, 0, 0.5)), "F16: Normal, 50 % erase halves coverage")
+	check(_color4_close(p3d.blend_erase(covered, 1.0, true), Color(0, 0, 0, 0)), "F16: Normal, full erase -> no coverage")
+	check(_color4_close(p3d.blend_erase(covered, 0.5, true), Color(0.5, 0, 0, 0.5)), "F16: Normal, 50 % erase halves coverage")
+	check(_color4_close(p3d.unpremultiply(Color(0.5, 0, 0, 0.5)), Color(1, 0, 0, 0.5)),
+		"F17: half-erased paint keeps its color (un-premultiplied)")
 	check(_color4_close(p3d.blend_erase(Color(0.2, 0.2, 0.2, 1), 1.0, false), Color.WHITE), "F16: Multiply, full erase -> white")
 	check(_color4_close(p3d.blend_erase(Color(0.2, 0.2, 0.2, 1), 0.5, false), Color(0.6, 0.6, 0.6, 1)),
 		"F16: Multiply, 50 % erase moves halfway to white")
@@ -551,6 +554,26 @@ func test_eraser(p3d: Node) -> void:
 	nmi.free()
 
 
+# F17: Normal meshes painted before the premultiplied fix (plain colors,
+# unpainted = (1, 1, 1, 0)) are upgraded once; premultiplied data is left alone.
+func test_premultiplied_upgrade(p3d: Node) -> void:
+	var old := _sphere_mi(null, Color(1, 1, 1, 0))
+	var arr := old.mesh.surface_get_arrays(0)
+	var cols: PackedColorArray = arr[Mesh.ARRAY_COLOR]
+	cols[0] = Color(1, 0, 0, 0.5)  # old: plain red at 50 %
+	arr[Mesh.ARRAY_COLOR] = cols
+	var m := ArrayMesh.new()
+	m.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arr)
+	var mdt := MeshDataTool.new()
+	mdt.create_from_surface(m, 0)
+	check(p3d.upgrade_straight_alpha(mdt), "F17: old plain-alpha Normal data is detected")
+	check(_color4_close(mdt.get_vertex_color(0), Color(0.5, 0, 0, 0.5)) and _color4_close(mdt.get_vertex_color(1), Color(0, 0, 0, 0)),
+		"F17: ... and upgraded to premultiplied (red 50 % -> 0.5 red, unpainted -> zeros)")
+	check(not p3d.upgrade_straight_alpha(mdt) and _color4_close(mdt.get_vertex_color(0), Color(0.5, 0, 0, 0.5)),
+		"F17: premultiplied data is never upgraded twice")
+	old.free()
+
+
 func _sphere_mi(material: Material = null, colors: Color = Color(0, 0, 0, -1)) -> MeshInstance3D:
 	var arrays := SphereMesh.new().get_mesh_arrays()
 	if colors.a >= 0.0:
@@ -589,10 +612,11 @@ func test_paint_modes(p3d: Node) -> void:
 		return
 
 	# Normal-mode compositing: alpha = coverage, "over" per dab.
-	var clear := Color(1, 1, 1, 0)
+	# (F17: Normal-mode colors are premultiplied: rgb = color x coverage.)
+	var clear := Color(0, 0, 0, 0)
 	var half_red: Color = p3d.blend_paint(clear, Color.RED, 0.5, true)
-	check(_color4_close(half_red, Color(1, 0, 0, 0.5)), "F13: Normal, 50 % red over nothing -> red at 50 % coverage")
-	check(_color4_close(p3d.blend_paint(half_red, Color.RED, 0.5, true), Color(1, 0, 0, 0.75)),
+	check(_color4_close(half_red, Color(0.5, 0, 0, 0.5)), "F13: Normal, 50 % red over nothing -> red at 50 % coverage")
+	check(_color4_close(p3d.blend_paint(half_red, Color.RED, 0.5, true), Color(0.75, 0, 0, 0.75)),
 		"F13: Normal, a second 50 % stroke -> 75 % coverage")
 	check(_color4_close(p3d.blend_paint(half_red, Color.BLUE, 1.0, true), Color(0, 0, 1, 1)),
 		"F13: Normal, 100 % opacity fully replaces")
@@ -604,7 +628,7 @@ func test_paint_modes(p3d: Node) -> void:
 		var n: Color = p3d.convert_color(c, MUL, NRM)
 		check(_color4_close(p3d.convert_color(n, NRM, MUL), c), "F13: Multiply->Normal->Multiply is exact for %s" % c)
 	check(p3d.convert_color(Color.WHITE, MUL, NRM).a == 0.0, "F13: white (unpainted) -> not covering in Normal")
-	for c in [Color(0.2, 0.4, 0.6, 1.0), Color(1, 1, 1, 0)]:
+	for c in [Color(0.2, 0.4, 0.6, 1.0), Color(0, 0, 0, 0)]:
 		var m: Color = p3d.convert_color(c, NRM, MUL)
 		check(_color4_close(p3d.convert_color(m, MUL, NRM), c), "F13: Normal->Multiply->Normal exact for full/no coverage %s" % c)
 	check(_color4_close(p3d.convert_color(Color(0, 0, 0, 0.5), NRM, MUL), Color(0.5, 0.5, 0.5, 1)),
@@ -667,7 +691,7 @@ func test_paint_modes(p3d: Node) -> void:
 	check(p3d.mesh_paint_mode(pmi) == NRM and n_mat.next_pass == p3d.PAINT_OVERLAY
 		and not n_mat.vertex_color_use_as_albedo and n_mat.albedo_texture == tex2,
 		"F13: dropdown -> Normal converts the material (texture kept)")
-	check(_color4_close(_vcolor(pmi, 0), Color(0.5, 0.5, 0.5, 1)) and _color4_close(_vcolor(pmi, 1), Color(1, 1, 1, 0)),
+	check(_color4_close(_vcolor(pmi, 0), Color(0.5, 0.5, 0.5, 1)) and _color4_close(_vcolor(pmi, 1), Color(0, 0, 0, 0)),
 		"F13: ... painted grey -> covering grey, white -> clear")
 	option.select(MUL)
 	option.item_selected.emit(MUL)
