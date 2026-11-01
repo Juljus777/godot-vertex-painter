@@ -1,8 +1,4 @@
-res://addons/vertex_painter/v2/vertex_painter.gd: The function "set_main_screen_editor()" is a static function but was called from an instance. Instead, it should be directly called from the type: "EditorInterface.set_main_screen_editor()".
 res://addons/vertex_painter/v2/vertex_painter_3d.gd: Narrowing conversion (float is converted to int and loses precision).
-res://addons/vertex_painter/v2/vertex_painter_3d.gd: The function "get_editor_main_screen()" is a static function but was called from an instance. Instead, it should be directly called from the type: "EditorInterface.get_editor_main_screen()".
-res://addons/vertex_painter/v2/vertex_painter_3d.gd: The function "get_editor_viewport_3d()" is a static function but was called from an instance. Instead, it should be directly called from the type: "EditorInterface.get_editor_viewport_3d()".
-res://addons/vertex_painter/v2/vertex_painter_3d.gd: The function "get_selection()" is a static function but was called from an instance. Instead, it should be directly called from the type: "EditorInterface.get_selection()".
 res://addons/vertex_painter/v2/vertex_painter_3d.gd: The local variable "changes" is declared but never used in the block. If this is intended, prefix it with an underscore: "_changes".
 res://addons/vertex_painter/v2/vertex_painter_3d.gd: The parameter "event" is never used in the function "process_move()". If this is intended, prefix it with an underscore: "_event".
 res://addons/vertex_painter/v2/vertex_painter_3d.gd: The parameter "new_text" is never used in the function "_on_brush_line_edit_text_submitted()". If this is intended, prefix it with an underscore: "_new_text".

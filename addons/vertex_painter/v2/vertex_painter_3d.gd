@@ -12,7 +12,6 @@ const VERTEX_COLOR = preload("res://addons/vertex_painter/shaders/vertex_color.t
 @onready var debug: MeshInstance3D = $"../Debug"
 @onready var show_debug_check_box = $"../VBoxContainer/ShowDebugCheckBox"
 
-var editor_interface: EditorInterface
 var screen := ""
 var mesh_i: MeshInstance3D = null
 var error := false
@@ -21,9 +20,6 @@ var active_mdt := MeshDataTool.new()
 var pre_mat
 var brush_size := 1
 var working := false
-
-func set_interface(_editor_interface: EditorInterface) -> void:
-	editor_interface = _editor_interface
 
 func set_screen_name(_screen: String) -> void:
 	screen = _screen
@@ -36,7 +32,7 @@ func msg(message: String) -> void:
 
 # OLD ALGORITHM
 func click_raycast():
-	var viewport = editor_interface.get_editor_viewport_3d(0)
+	var viewport = EditorInterface.get_editor_viewport_3d(0)
 	var mouse_pos = viewport.get_mouse_position()
 	var camera = viewport.get_camera_3d()
 	
@@ -52,7 +48,7 @@ func click_raycast():
 
 # NEW ALGORITHM - Does not require a collider
 func click_raycast2(offset := Vector2(0,0)) -> Vector3:
-	var viewport = editor_interface.get_editor_viewport_3d(0)
+	var viewport = EditorInterface.get_editor_viewport_3d(0)
 	var mouse_pos = viewport.get_mouse_position() + offset
 	var camera = viewport.get_camera_3d()
 	
@@ -147,7 +143,7 @@ func process_click(event: InputEvent) -> void:
 	if mb_event.button_index == 1:
 		
 		# get first mesh instanced selected node
-		var nodes := editor_interface.get_selection().get_selected_nodes()
+		var nodes := EditorInterface.get_selection().get_selected_nodes()
 		mesh_i = null
 		for n in nodes:
 			if n is MeshInstance3D:
@@ -273,7 +269,7 @@ func _input(event: InputEvent) -> void:
 	
 	# check within viewport bounds
 	var evnp: Vector2 = event.position
-	var scrn := editor_interface.get_editor_main_screen()
+	var scrn := EditorInterface.get_editor_main_screen()
 	var s_pos := scrn.global_position
 	var s_size := scrn.size
 	if evnp.x > s_pos.x \
