@@ -29,7 +29,7 @@ https://github.com/bikemurt/godot-vertex-painter/assets/23486102/fea58b3f-8b71-4
 - The selected mesh's move/rotate/scale gizmo is hidden while painting is enabled
 - Rotated and scaled meshes paint in the right place
 - Meshes inside instanced scenes (e.g. imported `.glb` files) can be painted via an **Enable Editable Children** button in the dock
-- The paint is shown on the mesh's own material (its texture is multiplied by the vertex colors) instead of replacing it with a debug shader; meshes without vertex colors start white
+- The paint is shown on the mesh's own material instead of replacing it with a debug shader, in one of two modes per mesh: **Multiply** (texture × paint) or **Normal** (paint covers the texture); switching a painted mesh converts it
 - Full color picker; its **A** (alpha) slider is the brush opacity, so strokes can build up gradually
 - **Alt+click / Alt+drag** picks a color from the painted mesh
 - Brush size is a slider with an adjustable maximum
@@ -56,10 +56,14 @@ https://github.com/bikemurt/godot-vertex-painter/assets/23486102/fea58b3f-8b71-4
 - **Alt+click / Alt+drag** on the mesh: pick a color from it.
 - The color picker's **A** slider is the opacity; low values build up over several strokes.
 - **Brush Size**: how many vertices each dab paints. Raise **Max** for dense meshes.
+- **Mode**: Multiply or Normal (see below), per mesh.
 - Untick the checkbox to select and move things normally again.
 
 **Notes**
-- The paint is multiplied with the mesh's own material: white leaves it unchanged, darker colors darken it.
+- **Multiply**: the mesh's texture is multiplied by the paint, so white leaves it unchanged and darker colors darken it (good for ambient occlusion).
+- **Normal**: the paint covers the texture, by the brush opacity; unpainted areas show the texture.
+- The mode is stored per mesh. Switching it on a painted mesh converts the paint (Ctrl+Z undoes it). Multiply → Normal → Multiply gives back the same colors; going Normal → Multiply bakes partly covering paint into the color.
+- Meshes painted with the old debug shader keep it until you pick a Mode for them; the colors are kept.
 - For a mesh inside an instanced scene (e.g. an imported `.glb`), press **Enable Editable Children** in the dock first. The painted mesh is then saved in your scene.
 
 ## ⚠️ Limitations

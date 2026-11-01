@@ -69,6 +69,74 @@ func _to_depth(normalized_distance: float) -> float:
 	return normalized_distance * mouse_camera_3d.far
 
 
+## F13: does the Normal-mode paint layer actually render over the material?
+## An isolated world: blue lit quad in front of a camera; read the center
+## pixel unpainted (blue), painted red in Normal (red), then converted to
+## Multiply (blue x red = near black).
+func _render_pixel(sv: SubViewport) -> Color:
+	sv.render_target_update_mode = SubViewport.UPDATE_ONCE
+	await RenderingServer.frame_post_draw
+	await RenderingServer.frame_post_draw
+	return sv.get_texture().get_image().get_pixel(32, 32)
+
+
+func _mode_render_probe(p3d: Node) -> bool:
+	var sv := SubViewport.new()
+	sv.size = Vector2i(64, 64)
+	sv.own_world_3d = true
+	sv.render_target_update_mode = SubViewport.UPDATE_DISABLED
+	add_child(sv)
+	var cam := Camera3D.new()
+	cam.position = Vector3(0, 0, 2)
+	sv.add_child(cam)
+	cam.current = true
+	var light := DirectionalLight3D.new()
+	light.rotation_degrees = Vector3(0, 0, 0)  # shines along -Z, onto the quad's front
+	sv.add_child(light)
+	var quad_arrays := QuadMesh.new()
+	quad_arrays.size = Vector2(2, 2)
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, quad_arrays.get_mesh_arrays())
+	var blue := StandardMaterial3D.new()
+	blue.albedo_color = Color(0, 0, 1)
+	mesh.surface_set_material(0, blue)
+	var quad := MeshInstance3D.new()
+	quad.mesh = mesh
+	sv.add_child(quad)
+
+	var option: OptionButton = painter.get_node("VBoxContainer/ModeRow/ModeOption")
+	var picker: ColorPicker = painter.get_node("VBoxContainer/ColorPicker")
+	option.select(1)  # Normal
+	p3d.mesh_i = quad
+	p3d.active_mdt.create_from_surface(quad.mesh, 0)
+	p3d.ensure_vertex_colors(p3d.active_mdt, 1)
+	p3d.begin_stroke_colors()
+	quad.mesh = ArrayMesh.new()
+	p3d.active_mdt.commit_to_surface(quad.mesh)
+	p3d.prepare_paint_material(quad, 1)
+	var unpainted: Color = await _render_pixel(sv)
+
+	picker.color = Color(1, 0, 0, 1)
+	var all: Array[int] = []
+	for v in p3d.active_mdt.get_vertex_count():
+		all.append(v)
+	p3d.apply_brush(all)
+	var painted: Color = await _render_pixel(sv)
+
+	p3d.convert_mesh_mode(quad, 0)  # -> Multiply
+	var multiplied: Color = await _render_pixel(sv)
+
+	var ok: bool = unpainted.b > 0.2 and unpainted.b > unpainted.r * 3.0 \
+		and painted.r > 0.2 and painted.r > painted.b * 3.0 \
+		and multiplied.r < 0.15 and multiplied.g < 0.15 and multiplied.b < 0.15  # black albedo; ~0.1 is the lit floor
+	print("MODE_RENDER_PROBE normal_unpainted=%s normal_painted_red=%s multiply_blue_x_red=%s %s" % [
+		unpainted, painted, multiplied, "PASS" if ok else "FAIL"])
+	option.select(0)
+	p3d.mesh_i = null
+	sv.free()
+	return ok
+
+
 func _paint_probe(p3d: Node, view_cam: Camera3D) -> bool:
 	var sphere := SphereMesh.new()
 	sphere.radial_segments = 24
@@ -213,6 +281,7 @@ func _run() -> void:
 	# F6: a full stroke through forward_3d_input() on a rotated, non-uniformly
 	# scaled, textured mesh with no vertex colors (like an atmosphere rock).
 	ok = await _paint_probe(p3d, view_cam) and ok
+	ok = await _mode_render_probe(p3d) and ok
 	view_cam.free()
 
 	print("DEPTH_PROBE_RESULT %s" % ("PASS" if ok else "FAIL"))
