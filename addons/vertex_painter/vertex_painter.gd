@@ -40,6 +40,7 @@ func _edit(object: Object) -> void:
 	var painter = main_panel_instance.vertex_painter_3d
 	if not painter.editable_children_requested.is_connected(_on_editable_children_requested):
 		painter.editable_children_requested.connect(_on_editable_children_requested)
+	painter.undo_redo = get_undo_redo()  # paint mode switches are undoable
 	var inner_mesh := _uneditable_instance_mesh(object)
 	if inner_mesh:
 		painter.set_target(null)
