@@ -26,6 +26,9 @@ var working := false
 var target: MeshInstance3D = null
 var view_camera: Camera3D = null
 var view_mouse_pos := Vector2.ZERO
+# True between a consumed left press and its release. click_active only turns
+# on once the (asynchronous) depth readback confirms the press hit the mesh.
+var _stroke_down := false
 # The mesh WE put an editor lock on (null if none). See _update_paint_lock().
 var _locked_mesh: MeshInstance3D = null
 
@@ -81,6 +84,10 @@ func click_raycast2(offset := Vector2(0,0)) -> Vector3:
 	else:
 		mouse_camera_3d.look_at(mouse_camera_3d.global_position + direction, Vector3.UP)
 		sub_viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
+		# Wait until that render has happened. Reading the texture right away
+		# returns the PREVIOUS render, i.e. the depth under the last painted
+		# point, so a click on empty space would "hit" and paint the mesh.
+		await RenderingServer.frame_post_draw
 		var vp_tex: ViewportTexture = sub_viewport.get_texture()
 		var vp_img := vp_tex.get_image()
 		if vp_img == null or vp_img.is_empty():
@@ -109,7 +116,11 @@ func start_paint(event: InputEvent) -> void:
 	if show_debug_check_box.button_pressed:
 		debug.show()
 	
-	var click_location := click_raycast2()
+	var click_location: Vector3 = await click_raycast2()
+	# The readback takes a frame; the button may have been released (or the
+	# target changed) meanwhile. Then this stroke is over: don't start it.
+	if not _stroke_down or not is_instance_valid(mesh_i) or mesh_i != target:
+		return
 	if click_location.is_finite():
 		#print(click_location)
 		active_mdt.create_from_surface(mesh_i.mesh, 0)
@@ -233,19 +244,25 @@ func forward_3d_input(camera: Camera3D, event: InputEvent) -> bool:
 		view_camera = camera
 		view_mouse_pos = event.position
 		mesh_i = target
+		_stroke_down = event.pressed
 		if event.pressed:
-			start_paint(event)
+			start_paint(event)  # coroutine: continues after the depth readback
 		else:
 			stop_paint()
 		# Consume every left click while painting is enabled, including misses,
 		# so clicking past the mesh doesn't deselect it mid-session.
 		return true
 
-	if event is InputEventMouseMotion and click_active:
+	# While the left button is held after a consumed press, the editor must not
+	# see the drag either (even if the press missed the mesh).
+	if event is InputEventMouseMotion and (click_active or _stroke_down):
 		if not (event.button_mask & MOUSE_BUTTON_MASK_LEFT):
 			# The release happened outside the viewport; end the stroke.
+			_stroke_down = false
 			stop_paint()
 			return false
+		if not click_active:
+			return true  # press missed the mesh: swallow the drag, don't paint
 		view_camera = camera
 		view_mouse_pos = event.position
 		process_move(event)
@@ -254,7 +271,9 @@ func forward_3d_input(camera: Camera3D, event: InputEvent) -> bool:
 	return false
 
 func paint() -> void:
-		var result2 = click_raycast2()
+		var result2: Vector3 = await click_raycast2()
+		if not click_active or not is_instance_valid(mesh_i):
+			return  # stroke ended while waiting for the depth readback
 		if result2.is_finite():
 			var vertices := get_n_closest_vertices(active_mdt, mesh_i.global_position, \
 				result2, brush_size)
@@ -276,9 +295,9 @@ func legacy_paint() -> void:
 func process_move(event: InputEvent) -> void:
 	if not working:
 		working = true
-		
-		paint()
-		
+
+		await paint()
+
 		# STATIC MESH LEGACY
 		#legacy_paint()
 		
