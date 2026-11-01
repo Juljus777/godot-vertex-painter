@@ -97,6 +97,7 @@ func test_instantiate_painter_scene() -> void:
 		test_brush_controls(p3d)
 		test_ctrl_select(p3d)
 		test_paint_modes(p3d)
+		test_unpaintable_mesh(p3d)
 	inst.queue_free()
 	await process_frame
 
@@ -453,6 +454,29 @@ func test_ctrl_select(p3d: Node) -> void:
 	level.free()
 	cam.free()
 	mi.free()
+
+
+# F14: a built-in shape (PlaneMesh) can't be loaded by MeshDataTool. Painting
+# it right after another mesh used to write that mesh's stale data into it
+# (the atmosphere ground plane turned into a rock).
+func test_unpaintable_mesh(p3d: Node) -> void:
+	var rock := _sphere_mi()
+	check(p3d.load_mesh_for_paint(rock) and p3d.active_mdt.get_vertex_count() > 0, "F14: an ArrayMesh loads for painting")
+	var plane := MeshInstance3D.new()
+	plane.name = "Ground"
+	var plane_mesh := PlaneMesh.new()
+	plane.mesh = plane_mesh
+	root.add_child(plane)
+	check(not p3d.load_mesh_for_paint(plane), "F14: a PlaneMesh is refused")
+	check(plane.mesh == plane_mesh and plane.get_surface_override_material(0) == null,
+		"F14: the PlaneMesh is left untouched (not replaced by the previous mesh)")
+	check(p3d.active_mdt.get_vertex_count() == 0, "F14: the previous mesh's data is cleared")
+	var hint: Label = p3d.get_node("../VBoxContainer/HintLabel")
+	check(hint.visible and hint.text.contains("PlaneMesh") and hint.text.contains("Ground"),
+		"F14: the dock says why")
+	p3d.show_instance_hint(null, null)
+	rock.free()
+	plane.free()
 
 
 func _sphere_mi(material: Material = null, colors: Color = Color(0, 0, 0, -1)) -> MeshInstance3D:
