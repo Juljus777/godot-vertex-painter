@@ -3,6 +3,10 @@ extends Node3D
 
 const VERTEX_COLOR = preload("res://addons/vertex_painter/shaders/vertex_color.tres")
 
+# Emitted by the dock's "Enable Editable Children" button; the EditorPlugin
+# performs it as an undoable action and selects `mesh`.
+signal editable_children_requested(instance_root: Node, mesh: MeshInstance3D)
+
 @onready var enable_check_box = $"../VBoxContainer/EnableCheckBox"
 @onready var space: PhysicsDirectSpaceState3D = get_world_3d().direct_space_state
 @onready var color_picker = $"../VBoxContainer/ColorPicker"
@@ -31,6 +35,11 @@ var view_mouse_pos := Vector2.ZERO
 var _stroke_down := false
 # The mesh WE put an editor lock on (null if none). See _update_paint_lock().
 var _locked_mesh: MeshInstance3D = null
+# Dock hint for an instanced scene whose mesh can't be painted yet.
+var _hint_label: Label
+var _editable_button: Button
+var _hint_root: Node = null
+var _hint_mesh: MeshInstance3D = null
 
 func set_interface(_editor_interface: EditorInterface) -> void:
 	editor_interface = _editor_interface
@@ -124,12 +133,48 @@ func start_paint(event: InputEvent) -> void:
 	if click_location.is_finite():
 		#print(click_location)
 		active_mdt.create_from_surface(mesh_i.mesh, 0)
+		ensure_vertex_colors(active_mdt)
 		mesh_i.mesh = ArrayMesh.new()
 		active_mdt.commit_to_surface(mesh_i.mesh)
-		pre_mat = mesh_i.get_surface_override_material(0)
-		mesh_i.set_surface_override_material(0, VERTEX_COLOR)
+		prepare_paint_material(mesh_i)
 		process_move(event)
 		click_active = true
+
+# Meshes without a color array (e.g. imported .glb rocks) would get BLACK for
+# every vertex the brush doesn't touch (MeshDataTool's default), so start them
+# all at white: the neutral value for a multiply-style paint like AO.
+func ensure_vertex_colors(mdt: MeshDataTool) -> void:
+	if mdt.get_format() & Mesh.ARRAY_FORMAT_COLOR:
+		return
+	for v in mdt.get_vertex_count():
+		mdt.set_vertex_color(v, Color.WHITE)
+
+# B3: show the paint on the mesh's OWN material instead of swapping in the
+# debug vertex-color shader. For a BaseMaterial3D (what imported .glb meshes
+# use) the surface gets a copy with vertex_color_use_as_albedo, so the texture
+# is multiplied by the painted colors, in the editor and in game. The copy is
+# made once; later strokes reuse it. Returns false when the paint can't be
+# shown automatically (another material type); the dock then says so.
+func prepare_paint_material(mi: MeshInstance3D) -> bool:
+	var mat := mi.get_active_material(0)
+	if mat == VERTEX_COLOR:
+		return true  # painted with an older version of this plugin
+	if mat == null:
+		var plain := StandardMaterial3D.new()
+		plain.vertex_color_use_as_albedo = true
+		plain.vertex_color_is_srgb = true
+		mi.set_surface_override_material(0, plain)
+		return true
+	if mat is BaseMaterial3D:
+		if (mat as BaseMaterial3D).vertex_color_use_as_albedo:
+			return true
+		var copy := mat.duplicate() as BaseMaterial3D
+		copy.vertex_color_use_as_albedo = true
+		copy.vertex_color_is_srgb = true  # color picker values are sRGB
+		mi.set_surface_override_material(0, copy)
+		return true
+	show_hint("\"%s\" uses a %s. The paint is stored in the mesh, but only shows if that material reads the vertex COLOR." % [mi.name, mat.get_class()])
+	return false
 
 func start_paint_legacy(event: InputEvent) -> void:
 	mesh_i.create_trimesh_collision()
@@ -149,9 +194,6 @@ func start_paint_legacy(event: InputEvent) -> void:
 func stop_paint() -> void:
 	mouse_camera_3d.hide()
 	debug.hide()
-	if pre_mat == null:
-		pre_mat = VERTEX_COLOR
-		mesh_i.set_surface_override_material(0, pre_mat)
 
 	# legacy - remove static body children
 	#for c in mesh_i.get_children():
@@ -275,7 +317,7 @@ func paint() -> void:
 		if not click_active or not is_instance_valid(mesh_i):
 			return  # stroke ended while waiting for the depth readback
 		if result2.is_finite():
-			var vertices := get_n_closest_vertices(active_mdt, mesh_i.global_position, \
+			var vertices := get_n_closest_vertices(active_mdt, mesh_i.global_transform, \
 				result2, brush_size)
 			for idx in vertices:
 				active_mdt.set_vertex_color(idx, color_picker.color)
@@ -285,7 +327,7 @@ func paint() -> void:
 func legacy_paint() -> void:
 	var result = click_raycast()
 	if "position" in result:
-		var vertices := get_n_closest_vertices(active_mdt, mesh_i.global_position, \
+		var vertices := get_n_closest_vertices(active_mdt, mesh_i.global_transform, \
 			result.position, brush_size)
 		for idx in vertices:
 			active_mdt.set_vertex_color(idx, color_picker.color)
@@ -304,12 +346,15 @@ func process_move(event: InputEvent) -> void:
 		await get_tree().create_timer(0.05).timeout
 		working = false
 	
-func get_n_closest_vertices(mdt: MeshDataTool, mesh_pos: Vector3, \
+# B2: vertices are compared in WORLD space through the mesh's full global
+# transform (position, rotation and non-uniform scale). Adding only the
+# position put the brush in the wrong place on any rotated or scaled mesh.
+func get_n_closest_vertices(mdt: MeshDataTool, mesh_xform: Transform3D, \
 	hit_pos: Vector3, n: int) -> Array[int]:
-	
+
 	var vertices := []
 	for v in range(mdt.get_vertex_count()):
-		var v_pos := mdt.get_vertex(v) + mesh_pos
+		var v_pos := mesh_xform * mdt.get_vertex(v)
 		var dist := hit_pos.distance_squared_to(v_pos)
 		
 		if len(vertices) < n:
@@ -338,11 +383,11 @@ func get_n_closest_vertices(mdt: MeshDataTool, mesh_pos: Vector3, \
 		v_indices.append(vertex[0])
 	return v_indices
 
-func get_closest_vertex(mdt: MeshDataTool, mesh_pos: Vector3, hit_pos: Vector3) -> int:
+func get_closest_vertex(mdt: MeshDataTool, mesh_xform: Transform3D, hit_pos: Vector3) -> int:
 	var closest_dist := INF
 	var closest_index := -1
 	for v in range(mdt.get_vertex_count()):
-		var v_pos := mdt.get_vertex(v) + mesh_pos
+		var v_pos := mesh_xform * mdt.get_vertex(v)
 		var dist := hit_pos.distance_squared_to(v_pos)
 		if dist < closest_dist:
 			closest_dist = dist
@@ -363,6 +408,44 @@ func set_brush_size() -> void:
 func _ready() -> void:
 	set_brush_size()
 	enable_check_box.toggled.connect(_on_enable_check_box_toggled)
+	_build_hint_ui()
+
+func _build_hint_ui() -> void:
+	var box: VBoxContainer = $"../VBoxContainer"
+	_hint_label = Label.new()
+	_hint_label.name = "HintLabel"
+	_hint_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_hint_label.hide()
+	box.add_child(_hint_label)
+	_editable_button = Button.new()
+	_editable_button.name = "EditableChildrenButton"
+	_editable_button.text = "Enable Editable Children"
+	_editable_button.hide()
+	_editable_button.pressed.connect(_on_editable_button_pressed)
+	box.add_child(_editable_button)
+
+# Text shown under the dock controls; empty hides it.
+func show_hint(text: String) -> void:
+	_hint_label.text = text
+	_hint_label.visible = not text.is_empty()
+
+# Called by the EditorPlugin when the selection is an instanced scene (e.g. an
+# imported .glb rock) whose MeshInstance3D isn't editable in this scene: its
+# mesh can't be painted (or the paint saved) until Editable Children is on.
+# root == null clears the hint.
+func show_instance_hint(root: Node, mesh: MeshInstance3D) -> void:
+	_hint_root = root
+	_hint_mesh = mesh
+	if root == null:
+		show_hint("")
+		_editable_button.hide()
+		return
+	show_hint("\"%s\" is an instanced scene. To paint its mesh \"%s\", enable Editable Children (the paint is then saved in this scene)." % [root.name, mesh.name])
+	_editable_button.show()
+
+func _on_editable_button_pressed() -> void:
+	if is_instance_valid(_hint_root) and is_instance_valid(_hint_mesh):
+		editable_children_requested.emit(_hint_root, _hint_mesh)
 
 func _on_brush_line_edit_text_submitted(new_text):
 	set_brush_size()

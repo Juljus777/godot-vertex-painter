@@ -65,7 +65,8 @@ func test_load_all_resources() -> void:
 		check(ok, "load " + path)
 	# The test scenes themselves must load too (they're used by the rendered
 	# probe and the manual check).
-	for path in ["res://tests/manual_test.tscn", "res://tests/depth_probe.tscn"]:
+	for path in ["res://tests/manual_test.tscn", "res://tests/depth_probe.tscn",
+			"res://tests/instanced_rock.tscn", "res://tests/manual_test_instanced.tscn"]:
 		var ps := ResourceLoader.load(path, "", ResourceLoader.CACHE_MODE_IGNORE) as PackedScene
 		check(ps != null and ps.can_instantiate(), "load " + path)
 
@@ -92,6 +93,7 @@ func test_instantiate_painter_scene() -> void:
 		check(p3d.brush_size == 5, "brush size parsed from BrushLineEdit (5)")
 		test_forward_3d_input(p3d)
 		await test_paint_lock(p3d)
+		test_paint_material(p3d)
 	inst.queue_free()
 	await process_frame
 
@@ -315,16 +317,16 @@ func test_get_n_closest_vertices() -> void:
 
 	# Large spacing: squared distances >= 1, selection is correct.
 	var big := _line_mdt([0.0, 10.0, 20.0, 30.0, 40.0, 50.0])
-	var r1: Array[int] = painter.get_n_closest_vertices(big, Vector3.ZERO, Vector3(50, 0, 0), 2)
+	var r1: Array[int] = painter.get_n_closest_vertices(big, Transform3D.IDENTITY, Vector3(50, 0, 0), 2)
 	check(_sorted(r1) == [4, 5], "large mesh, n=2, hit at x=50 -> [4, 5] (got %s)" % [r1])
 
-	var r2: Array[int] = painter.get_n_closest_vertices(big, Vector3(-50, 0, 0), Vector3.ZERO, 3)
+	var r2: Array[int] = painter.get_n_closest_vertices(big, Transform3D(Basis(), Vector3(-50, 0, 0)), Vector3.ZERO, 3)
 	check(_sorted(r2) == [3, 4, 5], "large mesh, mesh_pos offset, n=3 -> [3, 4, 5] (got %s)" % [r2])
 
 	# Small spacing: squared distances < 1. Before the B1 fix (`furthest_dist`
 	# was an int) these truncated to 0 and this returned [0, 1].
 	var small := _line_mdt([0.0, 0.1, 0.2, 0.3, 0.4, 0.5])
-	var r3: Array[int] = painter.get_n_closest_vertices(small, Vector3.ZERO, Vector3(0.5, 0, 0), 2)
+	var r3: Array[int] = painter.get_n_closest_vertices(small, Transform3D.IDENTITY, Vector3(0.5, 0, 0), 2)
 	check(_sorted(r3) == [4, 5], "small mesh, n=2, hit at x=0.5 -> [4, 5] (B1 fixed, got %s)" % [r3])
 
 	# The manual-test sphere (radius 1): with brush size 5, the painted vertices
@@ -333,8 +335,8 @@ func test_get_n_closest_vertices() -> void:
 	var sphere := MeshDataTool.new()
 	sphere.create_from_surface(load("res://tests/manual_test_mesh.res"), 0)
 	for hit in [Vector3(1, 0, 0), Vector3(0, 0, 1), Vector3(0, -1, 0), Vector3(0.6, 0.0, -0.8)]:
-		var picked: Array[int] = painter.get_n_closest_vertices(sphere, Vector3.ZERO, hit, 5)
-		var closest: int = painter.get_closest_vertex(sphere, Vector3.ZERO, hit)
+		var picked: Array[int] = painter.get_n_closest_vertices(sphere, Transform3D.IDENTITY, hit, 5)
+		var closest: int = painter.get_closest_vertex(sphere, Transform3D.IDENTITY, hit)
 		var far := 0.0
 		for i in picked:
 			far = maxf(far, sphere.get_vertex(i).distance_to(hit))
@@ -342,10 +344,90 @@ func test_get_n_closest_vertices() -> void:
 			"sphere hit %s: 5 vertices incl. closest, max dist %.3f < 0.3" % [hit, far])
 
 	# n >= vertex count returns everything.
-	var r4: Array[int] = painter.get_n_closest_vertices(small, Vector3.ZERO, Vector3.ZERO, 10)
+	var r4: Array[int] = painter.get_n_closest_vertices(small, Transform3D.IDENTITY, Vector3.ZERO, 10)
 	check(_sorted(r4) == [0, 1, 2, 3, 4, 5], "n > vertex count returns all (got %s)" % [r4])
 
 	# get_closest_vertex never had B1.
-	check(painter.get_closest_vertex(small, Vector3.ZERO, Vector3(0.31, 0, 0)) == 3,
+	check(painter.get_closest_vertex(small, Transform3D.IDENTITY, Vector3(0.31, 0, 0)) == 3,
 		"get_closest_vertex small mesh -> 3")
+
+	# B2: a rotated, non-uniformly scaled, moved mesh (like the atmosphere
+	# rocks). Hit = the world position of a known vertex; the brush must pick
+	# it and stay near it. The old code (vertex + position only) picked
+	# vertices far away.
+	var xf := Transform3D(Basis(Vector3(0.3, 1, 0.2).normalized(), 1.1).scaled(Vector3(3.0, 0.7, 1.8)),
+		Vector3(12, -4, 7))
+	for v in [0, 300, 1000]:
+		var world_hit: Vector3 = xf * sphere.get_vertex(v)
+		var picked2: Array[int] = painter.get_n_closest_vertices(sphere, xf, world_hit, 5)
+		var far2 := 0.0
+		for i in picked2:
+			far2 = maxf(far2, (xf * sphere.get_vertex(i)).distance_to(world_hit))
+		check(painter.get_closest_vertex(sphere, xf, world_hit) == v and far2 < 0.6,
+			"B2: rotated+scaled mesh, hit on vertex %d -> picked near it (max %.3f < 0.6)" % [v, far2])
 	painter.free()
+
+	# F6: meshes without vertex colors start white, not black.
+	var plain := ArrayMesh.new()
+	plain.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, SphereMesh.new().get_mesh_arrays())
+	var mdt := MeshDataTool.new()
+	mdt.create_from_surface(plain, 0)
+	var painter2: Node3D = script.new()
+	painter2.ensure_vertex_colors(mdt)
+	mdt.set_vertex_color(0, Color.RED)
+	var out := ArrayMesh.new()
+	mdt.commit_to_surface(out)
+	var cols: PackedColorArray = out.surface_get_arrays(0)[Mesh.ARRAY_COLOR]
+	check(cols[0] == Color.RED and cols[1] == Color.WHITE and cols[cols.size() - 1] == Color.WHITE,
+		"F6: colorless mesh -> unpainted vertices stay white (not MeshDataTool's black)")
+	painter2.free()
+
+
+# F6 (B3): painting shows on the mesh's own material instead of replacing it.
+func test_paint_material(p3d: Node) -> void:
+	var tex := GradientTexture2D.new()
+	var original := StandardMaterial3D.new()
+	original.albedo_texture = tex
+	original.albedo_color = Color(0.8, 0.5, 0.2)
+	var mi := MeshInstance3D.new()
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, SphereMesh.new().get_mesh_arrays())
+	mesh.surface_set_material(0, original)
+	mi.mesh = mesh
+	root.add_child(mi)
+
+	check(p3d.prepare_paint_material(mi), "F6: StandardMaterial3D is handled")
+	var used := mi.get_surface_override_material(0) as StandardMaterial3D
+	check(used != null and used != original and used.vertex_color_use_as_albedo
+		and used.albedo_texture == tex and used.albedo_color == original.albedo_color,
+		"F6: paint shows on a copy of the mesh's material (texture and color kept)")
+	check(not original.vertex_color_use_as_albedo, "F6: the original material is not modified")
+	p3d.prepare_paint_material(mi)
+	check(mi.get_surface_override_material(0) == used, "F6: later strokes reuse the same copy")
+
+	var bare := MeshInstance3D.new()
+	var bare_mesh := ArrayMesh.new()
+	bare_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, SphereMesh.new().get_mesh_arrays())
+	bare.mesh = bare_mesh
+	root.add_child(bare)
+	p3d.prepare_paint_material(bare)
+	var bare_used := bare.get_surface_override_material(0) as BaseMaterial3D
+	check(bare_used != null and bare_used.vertex_color_use_as_albedo, "F6: mesh without a material gets a vertex-color material")
+
+	var shader_mi := MeshInstance3D.new()
+	var shader_mesh := ArrayMesh.new()
+	shader_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, SphereMesh.new().get_mesh_arrays())
+	shader_mi.mesh = shader_mesh
+	var custom := ShaderMaterial.new()
+	shader_mi.set_surface_override_material(0, custom)
+	shader_mi.name = "ShaderRock"
+	root.add_child(shader_mi)
+	check(not p3d.prepare_paint_material(shader_mi) and shader_mi.get_surface_override_material(0) == custom,
+		"F6: a ShaderMaterial is left alone (and reported)")
+	var hint: Label = p3d.get_node("../VBoxContainer/HintLabel")
+	check(hint.visible and hint.text.contains("ShaderRock"), "F6: the dock explains why the paint may not show")
+	p3d.show_instance_hint(null, null)
+	check(not hint.visible, "F6: hint clears on the next selection")
+	mi.free()
+	bare.free()
+	shader_mi.free()
