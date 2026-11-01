@@ -18,17 +18,23 @@ echo "Godot: $("$GODOT" --version 2>/dev/null | tail -n1)"
 
 status=0
 
+# The editor runs use --quit-after instead of --quit: Godot 4.3's headless
+# editor segfaults when told to --quit on the first frame with this plugin
+# enabled (see docs/verification/godot-4.3.md). 200 frames also lets the
+# plugin's dock finish entering the tree.
+EDITOR_QUIT=(--quit-after 200)
+
 # Warm-up run: on a fresh checkout (no .godot/), the first editor open runs
 # before the global class cache exists and logs a spurious
 # 'Could not find type "VertexPainter"' parse error. Run once to import and
 # build the cache. Its log is reported for information but not scanned.
 WARMUP_LOG="$LOG_DIR/editor-warmup.log"
-echo "--- editor --headless --quit (warm-up, not scanned)"
-"$GODOT" --headless --path "$ROOT" --editor --quit >"$WARMUP_LOG" 2>&1
+echo "--- editor --headless (warm-up, not scanned)"
+"$GODOT" --headless --path "$ROOT" --editor "${EDITOR_QUIT[@]}" >"$WARMUP_LOG" 2>&1
 echo "exit code: $? (log: $WARMUP_LOG)"
 
-echo "--- editor --headless --quit"
-"$GODOT" --headless --path "$ROOT" --editor --quit >"$EDITOR_LOG" 2>&1
+echo "--- editor --headless"
+"$GODOT" --headless --path "$ROOT" --editor "${EDITOR_QUIT[@]}" >"$EDITOR_LOG" 2>&1
 rc=$?
 echo "exit code: $rc (log: $EDITOR_LOG)"
 [ $rc -eq 0 ] || status=1
@@ -60,14 +66,30 @@ else
 fi
 
 # GDScript static warnings: headless runs don't print them, and the editor
-# hides them for res://addons by default. lint_warnings.gd raises them to
-# errors; we keep "file: message" pairs (deduped, no line numbers, so edits
-# that shift lines don't cause churn) and compare them to the committed baseline.
+# hides them for res://addons by default. lint_warnings.gd emits a temporary
+# override.cfg that raises them to errors, then re-parses every script. We keep
+# "file: message" pairs (deduped, no line numbers, so edits that shift lines
+# don't cause churn) and compare them to the committed baseline.
 LINT_LOG="$LOG_DIR/lint.log"
 LINT_BASELINE="$ROOT/tests/lint_baseline.txt"
 LINT_CURRENT="$LOG_DIR/lint_current.txt"
+OVERRIDE="$ROOT/override.cfg"
 echo "--- GDScript warning lint"
+if [ -e "$OVERRIDE" ]; then
+	echo "refusing to run: $OVERRIDE already exists (it would be overwritten)"
+	echo "CHECK FAILED"
+	exit 1
+fi
+trap 'rm -f "$OVERRIDE"' EXIT
+"$GODOT" --headless --path "$ROOT" --script res://tests/lint_warnings.gd -- --emit-override 2>/dev/null \
+	| sed -n '/^OVR_BEGIN$/,/^OVR_END$/p' | sed '1d;$d' >"$OVERRIDE"
+cp "$OVERRIDE" "$LOG_DIR/lint_override.cfg"
 "$GODOT" --headless --path "$ROOT" --script res://tests/lint_warnings.gd >"$LINT_LOG" 2>&1
+rm -f "$OVERRIDE"
+if ! grep -q 'Warning treated as error\|^gdscript/warnings/' "$LINT_LOG" "$LOG_DIR/lint_override.cfg" >/dev/null; then
+	echo "override.cfg came out empty (log: $LOG_DIR/lint_override.cfg)"
+	status=1
+fi
 awk '
 	/\(Warning treated as error\.\)/ { msg = $0; sub(/^.*Parse Error: /, "", msg); sub(/ \(Warning treated as error\.\)$/, "", msg); next }
 	msg != "" && /^[[:space:]]+at:/ { if (match($0, /res:\/\/[^:)]+/)) print substr($0, RSTART, RLENGTH) ": " msg; msg = ""; next }

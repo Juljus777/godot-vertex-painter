@@ -1,32 +1,46 @@
 extends SceneTree
-## Surfaces GDScript static-analysis warnings for the addon, which headless
-## runs never print and which the editor hides for res://addons by default.
-## Raises every warning that is set to "warn" to "error" (in memory only;
-## project.godot is not changed), turns off the addons exclusion, then
-## re-parses each script. Each warning then shows up as a parse error.
-## Run: $GODOT --headless --path . --script res://tests/lint_warnings.gd
-## Normally run via tests/check_editor.sh, which does the comparison.
+## Surfaces GDScript static-analysis warnings for the addon and tests. Headless
+## runs never print them, and the editor hides them for res://addons by default.
+##
+## Two modes, both driven by tests/check_editor.sh:
+##   --emit-override  Print an override.cfg (between OVR_BEGIN/OVR_END) that
+##                    raises every default-on warning to error level and stops
+##                    excluding the addon. Must be a file because from 4.6 the
+##                    warning settings are read at startup (runtime changes are
+##                    ignored). Handles exclude_addons (<=4.5) and
+##                    directory_rules (4.6+).
+##   (default)        With that override.cfg in place, re-parse every script.
+##                    Each warning prints as "Parse Error: ... (Warning treated
+##                    as error.)". check_editor.sh extracts those lines and
+##                    compares them to tests/lint_baseline.txt.
+## Run: $GODOT --headless --path . --script res://tests/lint_warnings.gd [-- --emit-override]
 
 const DIRS := ["res://addons/vertex_painter/", "res://tests/"]
 const PREFIX := "debug/gdscript/warnings/"
 
 
 func _initialize() -> void:
-	var raised := 0
+	if "--emit-override" in OS.get_cmdline_user_args():
+		_emit_override()
+	else:
+		_lint()
+	quit(0)
+
+
+func _emit_override() -> void:
+	var out := "[debug]\n\n"
+	if ProjectSettings.has_setting(PREFIX + "exclude_addons"):
+		out += "gdscript/warnings/exclude_addons=false\n"
+	if ProjectSettings.has_setting(PREFIX + "directory_rules"):
+		out += "gdscript/warnings/directory_rules={\n\"res://addons\": 0,\n\"res://addons/vertex_painter\": 1\n}\n"
 	for p in ProjectSettings.get_property_list():
 		var key: String = p.name
-		if not key.begins_with(PREFIX):
-			continue
-		var val = ProjectSettings.get_setting(key)
-		if key == PREFIX + "exclude_addons":
-			ProjectSettings.set_setting(key, false)
-		elif key == PREFIX + "enable":
-			ProjectSettings.set_setting(key, true)
-		elif typeof(val) == TYPE_INT and val == 1:  # 1 = warn
-			ProjectSettings.set_setting(key, 2)  # 2 = error
-			raised += 1
-	print("LINT raised %d warning kinds to error level" % raised)
+		if key.begins_with(PREFIX) and p.type == TYPE_INT and ProjectSettings.get_setting(key) == 1:
+			out += key.trim_prefix("debug/") + "=2\n"  # 1 = warn, 2 = error
+	print("OVR_BEGIN\n" + out + "OVR_END")
 
+
+func _lint() -> void:
 	var files: Array[String] = []
 	for d in DIRS:
 		_collect(d, files)
@@ -36,13 +50,9 @@ func _initialize() -> void:
 			continue  # already loaded; re-parsing itself clashes with the cache
 		print("LINT parse ", path)
 		ResourceLoader.load(path, "", ResourceLoader.CACHE_MODE_IGNORE)
-	# Per-script load status is unreliable (a dependency that fails cascades
-	# into its dependents, and repeat loads may hit caches), so this script
-	# only produces the log. tests/check_editor.sh extracts the
-	# "(Warning treated as error.)" lines and compares them to
-	# tests/lint_baseline.txt.
+	# Per-script load status is unreliable (a failing dependency cascades into
+	# its dependents), so this only produces the log; the shell does the diff.
 	print("LINT_DONE")
-	quit(0)
 
 
 func _collect(dir_path: String, out: Array[String]) -> void:

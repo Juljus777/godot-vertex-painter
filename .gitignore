@@ -12,3 +12,6 @@ data_*/
 
 # Godot 4
 .godot/
+
+# Temporary file written by tests/check_editor.sh
+override.cfg
