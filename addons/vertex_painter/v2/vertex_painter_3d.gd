@@ -25,6 +25,8 @@ var working := false
 var target: MeshInstance3D = null
 var view_camera: Camera3D = null
 var view_mouse_pos := Vector2.ZERO
+# The mesh WE put an editor lock on (null if none). See _update_paint_lock().
+var _locked_mesh: MeshInstance3D = null
 
 func set_screen_name(_screen: String) -> void:
 	screen = _screen
@@ -148,6 +150,72 @@ func set_target(mesh: MeshInstance3D) -> void:
 	if click_active and mesh != target:
 		stop_paint()
 	target = mesh
+	_update_paint_lock()
+
+# While "Enable Vertex Painting" is on, the edited mesh carries the editor's
+# _edit_lock_ meta: it is the only script-reachable way to hide a node's
+# move/rotate/scale gizmo. Painting input doesn't depend on it (clicks are
+# consumed in forward_3d_input()); it is purely visual.
+# Rules: the editor treats the node as locked whenever the meta EXISTS, so we
+# remove it (never set it to false); we only ever remove a lock we added
+# ourselves, so a lock the user set is left alone.
+func _update_paint_lock(refresh_gizmo := true) -> void:
+	var want: MeshInstance3D = null
+	if is_node_ready() and is_inside_tree() and enable_check_box.button_pressed \
+			and is_instance_valid(target):
+		want = target
+	if want == _locked_mesh:
+		return
+	var changed := _release_paint_lock()
+	if want != null and not want.has_meta("_edit_lock_"):
+		want.set_meta("_edit_lock_", true)
+		_locked_mesh = want
+		changed = true
+	if changed and refresh_gizmo:
+		_refresh_editor_gizmo()
+
+# Removes our lock, if any. Returns true when a lock was actually removed.
+func _release_paint_lock() -> bool:
+	var removed := false
+	if is_instance_valid(_locked_mesh) and _locked_mesh.has_meta("_edit_lock_"):
+		_locked_mesh.remove_meta("_edit_lock_")
+		removed = true
+	_locked_mesh = null
+	return removed
+
+# The 3D editor only re-evaluates locks for its transform gizmo when the
+# selection changes, so nudge it. Deferred, and targeted at EditorSelection
+# (not self), so it is safe while the editor is calling into us or while this
+# node is being freed. Re-entry is harmless: _edit() -> set_target() with the
+# same mesh is a no-op in _update_paint_lock().
+func _refresh_editor_gizmo() -> void:
+	if not Engine.is_editor_hint():
+		return
+	var selection := EditorInterface.get_selection()
+	if selection:
+		Callable(selection, "emit_signal").call_deferred("selection_changed")
+
+# Called by the EditorPlugin's _apply_changes(), which the editor runs right
+# before writing a scene file: lift our lock so it is never saved into the
+# .tscn, and put it back on the next frame (after the synchronous save).
+func before_save() -> void:
+	if _release_paint_lock():
+		_update_paint_lock.call_deferred(false)
+
+func _on_enable_check_box_toggled(_enabled: bool) -> void:
+	if click_active and not enable_check_box.button_pressed:
+		stop_paint()
+	_update_paint_lock()
+
+func _enter_tree() -> void:
+	# The dock can leave and re-enter the tree (e.g. moved to another slot).
+	if is_node_ready():
+		_update_paint_lock()
+
+func _exit_tree() -> void:
+	# Plugin disabled, editor closing, or dock moved: never leave our lock behind.
+	if _release_paint_lock():
+		_refresh_editor_gizmo()
 
 # Called by the EditorPlugin's _forward_3d_gui_input(). Returns true when the
 # event was used for painting; the editor then skips its own selection and
@@ -271,6 +339,7 @@ func set_brush_size() -> void:
 
 func _ready() -> void:
 	set_brush_size()
+	enable_check_box.toggled.connect(_on_enable_check_box_toggled)
 
 func _on_brush_line_edit_text_submitted(new_text):
 	set_brush_size()
