@@ -78,3 +78,11 @@ Open `tests/manual_test.tscn` in the 4.2 editor (`$GODOT --path . -e`), then che
 - [ ] 6. Untick the checkbox. Normal selection and gizmos work again.
 
 Result: _pending_
+
+## Fix after manual check: B1 (paint lands above the cursor)
+
+juljus's manual check (2026-11-01) found that paint landed above the cursor and debug sphere, on 4.2 and every later version. This is Backlog **B1**, an upstream bug that's also on `main`, not a port regression. In `get_n_closest_vertices()`, `var furthest_dist := 0` was an int, so every squared distance below 1 was truncated to 0, and the first N vertices picked were never replaced. The manual-test sphere has radius 1, so with brush size 5 a hit at the equator painted 5 vertices near the top cap, about 1 unit away. The depth readback and debug sphere were correct.
+
+- Fix: `var furthest_dist := 0.0` (Rule 3: fixed on `godot-4.2`, then merged forward).
+- `run_tests.gd`: the small-mesh regression check now expects the correct `[4, 5]`. New checks on `manual_test_mesh.res` require that all 5 painted vertices include the true closest one and lie within 0.3 of the hit. They fail without the fix (max distance 0.96–0.99) and pass with it (max 0.155). 34 checks now.
+- Lint baseline 8 → 7: the narrowing-conversion warning is gone.
