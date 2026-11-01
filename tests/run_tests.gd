@@ -91,6 +91,7 @@ func test_instantiate_painter_scene() -> void:
 	if p3d != null:
 		check(p3d.brush_size == 5, "brush size parsed from BrushLineEdit (5)")
 		test_forward_3d_input(p3d)
+		await test_paint_lock(p3d)
 	inst.queue_free()
 	await process_frame
 
@@ -150,18 +151,80 @@ func test_forward_3d_input(p3d: Node) -> void:
 		"F3: motion after an outside release passes through")
 	check(not p3d.click_active, "F3: motion after an outside release ends the stroke")
 
-	# The plugin no longer touches the editor lock (was the B9 source), and it
-	# must not clear a lock the user set themselves.
-	check(not mi.has_meta("_edit_lock_"), "F3: painting never adds _edit_lock_")
-	mi.set_meta("_edit_lock_", true)
-	p3d.forward_3d_input(cam, _mouse_button(MOUSE_BUTTON_LEFT, true))
-	p3d.forward_3d_input(cam, _mouse_button(MOUSE_BUTTON_LEFT, false))
-	check(mi.get_meta("_edit_lock_", false) == true, "F3: a user's own lock is left alone")
-
 	enable.button_pressed = false
 	p3d.set_target(null)
 	cam.free()
 	mi.free()
+
+
+# F4: while "Enable Vertex Painting" is on, the edited mesh carries the
+# _edit_lock_ meta (hides its transform gizmo). It must be REMOVED (not set to
+# false, see B9) whenever painting stops applying to that mesh, must never be
+# saved into a scene, and a lock the user set must never be touched.
+func test_paint_lock(p3d: Node) -> void:
+	var a := MeshInstance3D.new()
+	var b := MeshInstance3D.new()
+	root.add_child(a)
+	root.add_child(b)
+	var enable: CheckBox = p3d.get_node("../VBoxContainer/EnableCheckBox")
+	enable.button_pressed = false
+	p3d.set_target(a)
+	check(not a.has_meta("_edit_lock_"), "F4: toggle off -> no lock")
+	enable.button_pressed = true
+	check(a.get_meta("_edit_lock_", false) == true, "F4: toggle on -> edited mesh locked (gizmo hidden)")
+	enable.button_pressed = false
+	check(not a.has_meta("_edit_lock_"), "F4: toggle off -> lock meta removed, not just false")
+
+	enable.button_pressed = true
+	p3d.set_target(b)
+	check(not a.has_meta("_edit_lock_") and b.has_meta("_edit_lock_"),
+		"F4: selecting another mesh moves the lock to it")
+	p3d.set_target(null)
+	check(not b.has_meta("_edit_lock_"), "F4: deselecting releases the lock")
+
+	# Save: the editor calls _apply_changes() -> before_save() right before
+	# writing the scene; the lock must be gone then and come back afterwards.
+	p3d.set_target(a)
+	p3d.before_save()
+	check(not a.has_meta("_edit_lock_"), "F4: lock lifted for saving")
+	var packed := PackedScene.new()
+	var holder := Node3D.new()
+	var copy := MeshInstance3D.new()
+	holder.add_child(copy)
+	copy.owner = holder
+	for m in a.get_meta_list():
+		copy.set_meta(m, a.get_meta(m))
+	packed.pack(holder)
+	var saved_path := "user://f4_lock_save_test.tscn"
+	ResourceSaver.save(packed, saved_path)
+	check(not FileAccess.get_file_as_string(saved_path).contains("_edit_lock_"),
+		"F4: saved scene contains no _edit_lock_")
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(saved_path))
+	holder.free()
+	await process_frame
+	check(a.has_meta("_edit_lock_"), "F4: lock restored on the next frame after saving")
+
+	# A lock the user set is never removed by us.
+	enable.button_pressed = false
+	b.set_meta("_edit_lock_", true)
+	enable.button_pressed = true
+	p3d.set_target(b)
+	enable.button_pressed = false
+	check(b.get_meta("_edit_lock_", false) == true, "F4: a user's own lock is left alone")
+
+	# Leaving the tree (plugin disabled / dock removed) releases our lock.
+	enable.button_pressed = true
+	p3d.set_target(a)
+	var parent := p3d.get_parent()
+	parent.remove_child(p3d)
+	check(not a.has_meta("_edit_lock_"), "F4: painter leaving the tree releases the lock")
+	parent.add_child(p3d)
+	check(a.has_meta("_edit_lock_"), "F4: painter re-entering the tree re-applies it")
+
+	enable.button_pressed = false
+	p3d.set_target(null)
+	a.free()
+	b.free()
 
 
 # --- 3. MeshDataTool round trip (same flow as start_paint()/paint()) --------
