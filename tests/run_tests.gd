@@ -90,22 +90,77 @@ func test_instantiate_painter_scene() -> void:
 		"SubViewport/MouseCamera3D/ScreenQuad exists")
 	if p3d != null:
 		check(p3d.brush_size == 5, "brush size parsed from BrushLineEdit (5)")
-		test_stop_paint_unlocks(p3d)
+		test_forward_3d_input(p3d)
 	inst.queue_free()
 	await process_frame
 
 
-# B9: stop_paint() must REMOVE _edit_lock_. The editor checks has_meta() for
-# the lock icon, gizmos and applying transforms, so a meta set to false still
-# leaves the mesh locked after the first stroke.
-func test_stop_paint_unlocks(p3d: Node) -> void:
+func _mouse_button(button: MouseButton, pressed: bool) -> InputEventMouseButton:
+	var ev := InputEventMouseButton.new()
+	ev.button_index = button
+	ev.pressed = pressed
+	ev.position = Vector2(10, 10)
+	return ev
+
+
+func _mouse_motion(left_held: bool) -> InputEventMouseMotion:
+	var ev := InputEventMouseMotion.new()
+	ev.position = Vector2(12, 10)
+	ev.button_mask = MOUSE_BUTTON_MASK_LEFT if left_held else 0
+	return ev
+
+
+# F3: painting input arrives through EditorPlugin._forward_3d_gui_input().
+# forward_3d_input() returns true when the editor must NOT also handle the
+# event (select/transform). Headless has no depth image, so every press is a
+# miss here; routing and consumption are what's under test.
+func test_forward_3d_input(p3d: Node) -> void:
+	var cam := Camera3D.new()
+	root.add_child(cam)
 	var mi := MeshInstance3D.new()
 	mi.mesh = BoxMesh.new()
 	root.add_child(mi)
-	mi.set_meta("_edit_lock_", true)  # what start_paint() does
-	p3d.mesh_i = mi
-	p3d.stop_paint()
-	check(not mi.has_meta("_edit_lock_"), "B9: stop_paint() removes _edit_lock_ meta")
+	var enable: CheckBox = p3d.get_node("../VBoxContainer/EnableCheckBox")
+
+	enable.button_pressed = false
+	p3d.set_target(mi)
+	check(not p3d.forward_3d_input(cam, _mouse_button(MOUSE_BUTTON_LEFT, true)),
+		"F3: painting disabled -> left click passes through to the editor")
+
+	enable.button_pressed = true
+	p3d.set_target(null)
+	check(not p3d.forward_3d_input(cam, _mouse_button(MOUSE_BUTTON_LEFT, true)),
+		"F3: no MeshInstance3D edited -> left click passes through")
+
+	p3d.set_target(mi)
+	check(not p3d.forward_3d_input(cam, _mouse_button(MOUSE_BUTTON_RIGHT, true)),
+		"F3: right button passes through (camera navigation)")
+	check(not p3d.forward_3d_input(cam, _mouse_motion(false)),
+		"F3: hover without a stroke passes through")
+	check(p3d.forward_3d_input(cam, _mouse_button(MOUSE_BUTTON_LEFT, true)),
+		"F3: left press is consumed while painting is enabled")
+	check(p3d.forward_3d_input(cam, _mouse_button(MOUSE_BUTTON_LEFT, false)),
+		"F3: left release is consumed")
+	check(not p3d.click_active, "F3: release ends the stroke")
+
+	# A stroke whose release happened outside the viewport ends on the next
+	# motion event without the left button held.
+	p3d.click_active = true
+	check(not p3d.forward_3d_input(cam, _mouse_motion(false)),
+		"F3: motion after an outside release passes through")
+	check(not p3d.click_active, "F3: motion after an outside release ends the stroke")
+
+	# The plugin no longer touches the editor lock (was the B9 source), and it
+	# must not clear a lock the user set themselves.
+	check(not mi.has_meta("_edit_lock_"), "F3: painting never adds _edit_lock_")
+	mi.set_meta("_edit_lock_", true)
+	p3d.forward_3d_input(cam, _mouse_button(MOUSE_BUTTON_LEFT, true))
+	p3d.forward_3d_input(cam, _mouse_button(MOUSE_BUTTON_LEFT, false))
+	check(mi.get_meta("_edit_lock_", false) == true, "F3: a user's own lock is left alone")
+
+	enable.button_pressed = false
+	p3d.set_target(null)
+	cam.free()
 	mi.free()
 
 

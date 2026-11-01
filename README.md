@@ -38,7 +38,8 @@ https://github.com/bikemurt/godot-vertex-painter/assets/23486102/fea58b3f-8b71-4
     - Import the addons folder into your project (if it already isn't present).
 2. Activate the Vertex Painter addon under Project > Project Settings > Plugins. If an error dialog appears, restart the engine and try activating it again.
 3. Add a MeshInstance3D to the scene which you wish to paint vertex colors]
-4. Check "Enable Vertex Painting", click the MeshInstance3D, set the Color using the color picker, and start painting on screen
+4. Select the MeshInstance3D (in the Scene tree or by clicking it in the 3D view), check "Enable Vertex Painting", set the Color using the color picker, and paint by dragging with the left mouse button
+    - While painting is enabled, left clicks in the 3D view paint instead of selecting or moving things; right and middle mouse still move the camera. Untick the checkbox to edit normally again.
 
 ## ⚠️ Limitations
 
