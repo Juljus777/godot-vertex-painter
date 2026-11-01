@@ -40,11 +40,23 @@ DEPTH_PROBE_RESULT PASS
 - **Reversed-Z depth (4.3):** **no impact.** The decoded depth is bit-identical to 4.2 at 7.0 and 30.0, and a miss still decodes to normalized `0.0` → `-INF` (nothing painted). That's expected: `gpu_depth.gdshader` goes through `INV_PROJECTION_MATRIX` with the raw depth sample, so the depth convention is handled by the matrix. agent-1 found the same on all of 4.2–4.7, also at 2.5 and 40 units.
 - **`get_editor_interface()` deprecation:** migrated (see above). GDScript doesn't print a warning for it. The deprecation is in the class reference only.
 
-## Engine issue found: 4.3 headless editor crash on `--quit`
+## Engine issue found: 4.3 headless editor crash on `--quit` (harness-only)
 
-`godot-4.3 --headless --path . --editor --quit` segfaults on exit (rc 134/139), deterministically, with this addon enabled, on `main` too, so it isn't caused by the port. An empty plugin, or plugins that dock a plain Control/ColorPicker/CheckBox/LineEdit, exit 0. Replacing `vertex_painter_3d.gd` with an empty stub still crashes, so it's tied to the scene structure, not the script logic. `--quit-after 200` exits cleanly every time, on 4.2 and 4.3, and `check_editor.sh` now uses it (commit `555422d` on `godot-4.2`).
+`godot-4.3 --headless --path . --editor --quit` segfaults on exit (rc 134/139). This happens on `main` too, so the port didn't cause it. **It's an engine bug, not the addon** (agent-1, board card T2a). The minimal repro is a fresh 4.3 project with one PNG and *any* enabled plugin, even a no-op `EditorPlugin`. Remove the PNG or the plugin and it exits 0. 4.2 and 4.4 exit 0. The crash happens before `.godot/` editor state is saved, so it repeats on every run until one run exits cleanly. After one `--quit-after` run, plain `--quit` exits 0 too.
 
-Still open: agent-1 is bisecting the scene (board card T2a). The question is whether the real 4.3 editor could also crash on exit or plugin disable. **Manual check item 7 below covers it.**
+- `check_editor.sh` uses `--quit-after 200` for every editor run, the warm-up included (commit `555422d`).
+- Plugin teardown in a real 4.3 editor session is covered by the editor probe (`tests/editor_probe/`, merged from `godot-4.2`): two disable/enable cycles, all PASS, exit 0:
+
+```
+EDITOR_PROBE initial panels=1 expected=1 PASS
+EDITOR_PROBE disable panels=0 expected=0 PASS
+EDITOR_PROBE enable panels=1 expected=1 PASS
+EDITOR_PROBE disable2 panels=0 expected=0 PASS
+EDITOR_PROBE enable2 panels=1 expected=1 PASS
+EDITOR_PROBE_RESULT PASS
+```
+
+Manual check item 7 still confirms it in the GUI editor.
 
 ## Manual checklist (user, Godot 4.3 editor)
 

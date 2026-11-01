@@ -56,8 +56,37 @@ scan() {
 	' "$1"
 }
 
+# Editor probe: in a real headless editor session, disable and re-enable the
+# plugin twice and check its dock appears/disappears (tests/editor_probe/).
+# The editor ignores override.cfg for editor_plugins, so project.godot is
+# edited temporarily and always restored from a backup.
+PROBE_LOG="$LOG_DIR/editor-probe.log"
+PROJECT_BAK="$LOG_DIR/project.godot.bak"
+PROBE_CFG="res://tests/editor_probe/plugin.cfg"
+cleanup() {
+	[ -f "$PROJECT_BAK" ] && cp "$PROJECT_BAK" "$ROOT/project.godot" && rm -f "$PROJECT_BAK"
+	rm -f "$ROOT/override.cfg"
+}
+trap cleanup EXIT
+echo "--- editor probe (plugin disable/enable x2)"
+cp "$ROOT/project.godot" "$PROJECT_BAK"
+sed -i "s#^enabled=PackedStringArray(#enabled=PackedStringArray(\"$PROBE_CFG\", #" "$ROOT/project.godot"
+if grep -q "$PROBE_CFG" "$ROOT/project.godot"; then
+	# The probe quits by itself; --quit-after is only a safety net.
+	"$GODOT" --headless --path "$ROOT" --editor --quit-after 3000 >"$PROBE_LOG" 2>&1
+	rc=$?
+	cleanup
+	grep '^EDITOR_PROBE' "$PROBE_LOG"
+	echo "exit code: $rc (log: $PROBE_LOG)"
+	if [ $rc -ne 0 ] || ! grep -q '^EDITOR_PROBE_RESULT PASS' "$PROBE_LOG"; then status=1; fi
+else
+	cleanup
+	echo "could not add the probe to project.godot's editor_plugins/enabled"
+	status=1
+fi
+
 echo "--- scanning logs for addon/test errors and warnings"
-problems="$( { scan "$EDITOR_LOG"; scan "$TESTS_LOG"; } )"
+problems="$( { scan "$EDITOR_LOG"; scan "$TESTS_LOG"; scan "$PROBE_LOG"; } )"
 if [ -n "$problems" ]; then
 	echo "$problems"
 	status=1
@@ -80,7 +109,6 @@ if [ -e "$OVERRIDE" ]; then
 	echo "CHECK FAILED"
 	exit 1
 fi
-trap 'rm -f "$OVERRIDE"' EXIT
 "$GODOT" --headless --path "$ROOT" --script res://tests/lint_warnings.gd -- --emit-override 2>/dev/null \
 	| sed -n '/^OVR_BEGIN$/,/^OVR_END$/p' | sed '1d;$d' >"$OVERRIDE"
 cp "$OVERRIDE" "$LOG_DIR/lint_override.cfg"
