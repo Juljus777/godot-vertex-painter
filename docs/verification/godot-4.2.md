@@ -16,6 +16,7 @@ There are no addon code changes on this branch. It adds the dev project and test
 | `tests/run_tests.gd` | Headless `SceneTree` tests: load every addon resource, instantiate the dock scene, MeshDataTool round trip, `get_n_closest_vertices()` regression guard. |
 | `tests/check_editor.sh` | Runs a warm-up editor open, a scanned editor open, `run_tests.gd`, a log scan and the GDScript warning lint. |
 | `tests/lint_warnings.gd` + `tests/lint_baseline.txt` | Makes GDScript static warnings visible and compares them with a baseline (see below). |
+| `tests/editor_probe/` | Test-only editor plugin. In a real headless editor session, `check_editor.sh` enables it next to vertex_painter (by temporarily editing `project.godot`, always restored). It disables and re-enables vertex_painter twice and checks that the dock panel appears and disappears. On 4.2: all 5 steps PASS. A negative test with `_exit_tree()` stubbed out fails as expected. |
 | `tests/depth_probe.tscn` + `.gd` | Rendered smoke test of the `click_raycast2()` depth readback, using the plugin's own SubViewport/MouseCamera3D/ScreenQuad. |
 | `tests/manual_test.tscn` + `tests/manual_test_mesh.res` | Scene for the manual check: a 1274-vertex sphere `ArrayMesh` (48×24, white vertex colors), plus a sun, a sky and a camera. |
 
