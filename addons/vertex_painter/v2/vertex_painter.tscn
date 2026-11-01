@@ -42,8 +42,7 @@ color_mode = 1
 
 [node name="Label" type="Label" parent="VBoxContainer"]
 layout_mode = 2
-text = "Brush Size:
-"
+text = "Brush Size:"
 
 [node name="BrushLineEdit" type="LineEdit" parent="VBoxContainer"]
 layout_mode = 2
