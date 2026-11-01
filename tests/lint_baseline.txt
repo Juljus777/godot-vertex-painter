@@ -1,2 +1,1 @@
-res://addons/vertex_painter/v2/vertex_painter_3d.gd: The local variable "changes" is declared but never used in the block. If this is intended, prefix it with an underscore: "_changes".
 res://addons/vertex_painter/v2/vertex_painter_3d.gd: The parameter "event" is never used in the function "process_move()". If this is intended, prefix it with an underscore: "_event".

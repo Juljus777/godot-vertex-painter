@@ -66,6 +66,12 @@ var _pick_busy := false
 # Vertex colors at the start of the current stroke. Opacity blends from these,
 # so going over the same spot within one stroke never exceeds the opacity.
 var _stroke_base := PackedColorArray()
+# World positions of the mesh's vertices for the current stroke (computed
+# once per stroke), and the previous dab's hit point and brush reach, used to
+# fill gaps when the cursor moves faster than the dabs.
+var _stroke_world := PackedVector3Array()
+var _last_hit := Vector3(INF, INF, INF)
+var _last_reach := 0.0
 # Paint mode dropdown (built in code) and the editor's undo manager (set by
 # the EditorPlugin; null in tests, then changes apply directly).
 var _mode_option: OptionButton
@@ -130,22 +136,24 @@ func click_raycast2(offset := Vector2(0,0)) -> Vector3:
 			# No depth image yet (or no renderer, e.g. headless): treat as a miss.
 			return Vector3(-INF, -INF, -INF)
 
-		var screen_depth = vp_img.get_pixel(0, 0).srgb_to_linear()
-		
-		var screen_rg = Vector2(screen_depth.r, screen_depth.g)
-		var normalized_distance: float = screen_rg.dot(Vector2(1, 1.0 / 255.0))
-		#print(normalized_distance)
-		if (is_zero_approx(normalized_distance)):
-			return Vector3(-INF, -INF, -INF)
-		
-		if (normalized_distance > 0.9999):
-			normalized_distance = 1.0
-		
+		var normalized_distance := decode_depth(vp_img.get_pixel(0, 0))
+		if normalized_distance < 0.0:
+			return Vector3(-INF, -INF, -INF)  # nothing there (sky / far plane)
+
 		var depth: float = normalized_distance * mouse_camera_3d.far
 		point = mouse_camera_3d.global_position + direction * depth
 	
 	debug.global_position = point
 	return point
+
+# Distance / camera far (0..1) from a pixel written by gpu_depth.gdshader: a
+# 24-bit integer in the R, G, B bytes. -1 for a miss: nothing rendered there
+# (the far plane, i.e. sky) or an empty pixel.
+func decode_depth(px: Color) -> float:
+	var d := roundf(px.r * 255.0) * 65536.0 + roundf(px.g * 255.0) * 256.0 + roundf(px.b * 255.0)
+	if d <= 0.0 or d >= 16777215.0 - 1.0:
+		return -1.0
+	return d / 16777215.0
 
 func start_paint(event: InputEvent) -> void:
 	mouse_camera_3d.show()
@@ -172,6 +180,8 @@ func start_paint(event: InputEvent) -> void:
 			_convert_mdt_colors(active_mdt, PaintMode.MULTIPLY, PaintMode.NORMAL)
 		ensure_vertex_colors(active_mdt, mode)
 		begin_stroke_colors()
+		_stroke_world = world_vertices(active_mdt, mesh_i.global_transform)
+		_last_hit = Vector3(INF, INF, INF)
 		mesh_i.mesh = ArrayMesh.new()
 		active_mdt.commit_to_surface(mesh_i.mesh)
 		prepare_paint_material(mesh_i, mode)
@@ -561,6 +571,8 @@ func forward_3d_input(camera: Camera3D, event: InputEvent) -> bool:
 		if event.pressed:
 			_erasing = event.shift_pressed  # Shift+drag erases
 			start_paint(event)  # coroutine: continues after the depth readback
+		elif click_active:
+			_finish_stroke()  # one last dab at the release point, then stop
 		else:
 			stop_paint()
 		# Consume every left click while painting is enabled, including misses,
@@ -589,9 +601,45 @@ func paint() -> void:
 		if not click_active or not is_instance_valid(mesh_i):
 			return  # stroke ended while waiting for the depth readback
 		if result2.is_finite():
-			var vertices := get_n_closest_vertices(active_mdt, mesh_i.global_transform, \
-				result2, brush_size)
-			apply_brush(vertices)
+			apply_brush(stroke_dab_vertices(result2))
+
+# The last cursor movement before the release can fall inside the 0.05 s
+# throttle and never be painted (the end of a fast stroke was missing): wait
+# for the dab in progress, paint once more where the button was released,
+# then end the stroke.
+func _finish_stroke() -> void:
+	while working and click_active:
+		await get_tree().process_frame
+	if click_active and is_instance_valid(mesh_i):
+		working = true
+		await paint()
+		working = false
+	if click_active:
+		stop_paint()
+
+# Vertices for one dab at `hit`. If the cursor moved farther than the brush
+# reaches since the previous dab (fast strokes, big meshes), the points in
+# between are stamped too, so the stroke has no gaps.
+func stroke_dab_vertices(hit: Vector3) -> Array[int]:
+	if _stroke_world.size() != active_mdt.get_vertex_count():
+		_stroke_world = world_vertices(active_mdt, mesh_i.global_transform)
+	var picked := {}
+	var stamps := 1
+	if _last_hit.is_finite() and _last_reach > 0.0:
+		stamps = clampi(ceili(_last_hit.distance_to(hit) / _last_reach), 1, 32)
+	for s in stamps:
+		var p := hit if stamps == 1 else _last_hit.lerp(hit, float(s + 1) / stamps)
+		for v in nearest_vertices(_stroke_world, p, brush_size):
+			picked[v] = true
+	var near := nearest_vertices(_stroke_world, hit, brush_size)
+	_last_reach = 0.0
+	for v in near:
+		_last_reach = maxf(_last_reach, _stroke_world[v].distance_to(hit))
+	_last_hit = hit
+	var out: Array[int] = []
+	for v in picked:
+		out.append(v)
+	return out
 
 # Snapshot of the colors before this stroke (see _stroke_base).
 func begin_stroke_colors() -> void:
@@ -758,39 +806,39 @@ func process_move(event: InputEvent) -> void:
 # B2: vertices are compared in WORLD space through the mesh's full global
 # transform (position, rotation and non-uniform scale). Adding only the
 # position put the brush in the wrong place on any rotated or scaled mesh.
+# World positions of all of the MeshDataTool's vertices.
+func world_vertices(mdt: MeshDataTool, mesh_xform: Transform3D) -> PackedVector3Array:
+	var out := PackedVector3Array()
+	out.resize(mdt.get_vertex_count())
+	for v in out.size():
+		out[v] = mesh_xform * mdt.get_vertex(v)
+	return out
+
+# The `n` vertices nearest to `point`: one pass for the distances, then the
+# engine's native sort finds the cut-off. (The old pass compared every vertex
+# against all n picks so far: slow on big meshes, which left gaps in strokes.)
+func nearest_vertices(world: PackedVector3Array, point: Vector3, n: int) -> Array[int]:
+	var count := world.size()
+	var out: Array[int] = []
+	if count == 0 or n <= 0:
+		return out
+	var dist := PackedFloat32Array()
+	dist.resize(count)
+	for v in count:
+		dist[v] = world[v].distance_squared_to(point)
+	var sorted := dist.duplicate()
+	sorted.sort()
+	var cutoff := sorted[mini(n, count) - 1]
+	for v in count:
+		if dist[v] <= cutoff:
+			out.append(v)
+			if out.size() == n:
+				break
+	return out
+
 func get_n_closest_vertices(mdt: MeshDataTool, mesh_xform: Transform3D, \
 	hit_pos: Vector3, n: int) -> Array[int]:
-
-	var vertices := []
-	for v in range(mdt.get_vertex_count()):
-		var v_pos := mesh_xform * mdt.get_vertex(v)
-		var dist := hit_pos.distance_squared_to(v_pos)
-		
-		if len(vertices) < n:
-			# fill with the first n vertices
-			vertices.append([v, dist])
-		else:
-			# after array fill, determine if largest should be replaced
-			var changes := []
-			var furthest_dist := 0.0
-			var furthest_index := -1
-			for index in range(len(vertices)):
-				var vertex: Variant = vertices[index]
-				var dist_2: float = vertex[1]
-				
-				if dist_2 > furthest_dist:
-					furthest_dist = dist_2
-					furthest_index = index
-			
-			# largest element gets kicked out for this one
-			if dist < furthest_dist:
-				vertices[furthest_index] = [v, dist]
-	
-	# extract indices (idx)
-	var v_indices: Array[int] = []
-	for vertex in vertices:
-		v_indices.append(vertex[0])
-	return v_indices
+	return nearest_vertices(world_vertices(mdt, mesh_xform), hit_pos, n)
 
 func get_closest_vertex(mdt: MeshDataTool, mesh_xform: Transform3D, hit_pos: Vector3) -> int:
 	var closest_dist := INF
