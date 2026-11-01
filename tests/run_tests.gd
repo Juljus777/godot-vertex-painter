@@ -461,22 +461,42 @@ func test_ctrl_select(p3d: Node) -> void:
 # (the atmosphere ground plane turned into a rock).
 func test_unpaintable_mesh(p3d: Node) -> void:
 	var rock := _sphere_mi()
-	check(p3d.load_mesh_for_paint(rock) and p3d.active_mdt.get_vertex_count() > 0, "F14: an ArrayMesh loads for painting")
+	check(p3d.load_mesh_for_paint(rock) and p3d.active_mdt.get_vertex_count() > 100, "F14: an ArrayMesh loads for painting")
+	# F15: built-in shapes load through an ArrayMesh copy of their own geometry.
 	var plane := MeshInstance3D.new()
 	plane.name = "Ground"
 	var plane_mesh := PlaneMesh.new()
+	plane_mesh.subdivide_width = 3
+	plane_mesh.subdivide_depth = 3
 	plane.mesh = plane_mesh
 	root.add_child(plane)
-	check(not p3d.load_mesh_for_paint(plane), "F14: a PlaneMesh is refused")
-	check(plane.mesh == plane_mesh and plane.get_surface_override_material(0) == null,
-		"F14: the PlaneMesh is left untouched (not replaced by the previous mesh)")
-	check(p3d.active_mdt.get_vertex_count() == 0, "F14: the previous mesh's data is cleared")
+	var plane_verts := (plane_mesh.get_mesh_arrays()[Mesh.ARRAY_VERTEX] as PackedVector3Array).size()
+	check(p3d.load_mesh_for_paint(plane) and p3d.active_mdt.get_vertex_count() == plane_verts,
+		"F15: a PlaneMesh loads with its OWN %d vertices (not the previous mesh's)" % plane_verts)
 	var hint: Label = p3d.get_node("../VBoxContainer/HintLabel")
-	check(hint.visible and hint.text.contains("PlaneMesh") and hint.text.contains("Ground"),
-		"F14: the dock says why")
+	check(hint.visible and hint.text.contains("subdivide"), "F15: the dock suggests subdividing built-in shapes")
+	check(plane.mesh == plane_mesh, "F15: loading alone doesn't change the node's mesh")
+	var prim_mat := StandardMaterial3D.new()
+	var box := BoxMesh.new()
+	box.material = prim_mat
+	var converted: ArrayMesh = p3d.primitive_to_array_mesh(box)
+	check(converted.get_surface_count() == 1 and converted.surface_get_material(0) == prim_mat,
+		"F15: the editable copy keeps the shape's material")
+	# F14: a mesh type that still can't be painted is refused and left alone.
+	p3d.load_mesh_for_paint(rock)
+	var other := MeshInstance3D.new()
+	other.name = "Other"
+	var imm := ImmediateMesh.new()
+	other.mesh = imm
+	root.add_child(other)
+	check(not p3d.load_mesh_for_paint(other) and other.mesh == imm and other.get_surface_override_material(0) == null,
+		"F14: an unsupported mesh type is refused and left untouched")
+	check(p3d.active_mdt.get_vertex_count() == 0, "F14: the previous mesh's data is cleared")
+	check(hint.visible and hint.text.contains("ImmediateMesh") and hint.text.contains("Other"), "F14: the dock says why")
 	p3d.show_instance_hint(null, null)
 	rock.free()
 	plane.free()
+	other.free()
 
 
 func _sphere_mi(material: Material = null, colors: Color = Color(0, 0, 0, -1)) -> MeshInstance3D:
