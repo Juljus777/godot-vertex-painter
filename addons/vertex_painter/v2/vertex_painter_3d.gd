@@ -45,6 +45,8 @@ var view_mouse_pos := Vector2.ZERO
 var _stroke_down := false
 # True between a consumed Ctrl+click press and its release.
 var _ctrl_select_down := false
+# True for a stroke started with Shift held: it erases instead of painting.
+var _erasing := false
 # The mesh WE put an editor lock on (null if none). See _update_paint_lock().
 var _locked_mesh: MeshInstance3D = null
 # Dock hint for an instanced scene whose mesh can't be painted yet.
@@ -175,18 +177,34 @@ func start_paint(event: InputEvent) -> void:
 		click_active = true
 
 # Load `mi`'s first surface into active_mdt for painting. MeshDataTool only
-# works on an ArrayMesh; for anything else (built-in PlaneMesh, BoxMesh, ...)
-# or a failed load, the stale data from the previously painted mesh must not
-# be written into this one (it used to replace e.g. a plane with a rock), so
-# clear it, leave the mesh untouched and say why in the dock.
+# works on an ArrayMesh, so a built-in shape (PlaneMesh, BoxMesh, ...) is read
+# through an ArrayMesh copy of its geometry and material; start_paint() then
+# puts the painted ArrayMesh on the node as for any other mesh. Anything else,
+# or a failed load, must not get the previously painted mesh's stale data
+# written into it (it used to replace e.g. a plane with a rock): clear it,
+# leave the mesh untouched and say why in the dock.
 func load_mesh_for_paint(mi: MeshInstance3D) -> bool:
 	active_mdt.clear()
-	if mi.mesh is ArrayMesh and active_mdt.create_from_surface(mi.mesh, 0) == OK:
+	var source: Mesh = mi.mesh
+	if source is PrimitiveMesh:
+		source = primitive_to_array_mesh(source as PrimitiveMesh)
+	if source is ArrayMesh and active_mdt.create_from_surface(source, 0) == OK:
+		if mi.mesh is PrimitiveMesh:
+			show_hint("\"%s\" was a %s and is now an editable mesh. Paint is stored per vertex, so subdivide built-in shapes before painting them." % [mi.name, mi.mesh.get_class()])
 		return true
 	active_mdt.clear()
 	var kind := mi.mesh.get_class() if mi.mesh else "no mesh"
-	show_hint("\"%s\" uses a %s, which can't be painted (only imported meshes / ArrayMesh). Nothing was changed." % [mi.name, kind])
+	show_hint("\"%s\" uses a %s, which can't be painted (only imported meshes, ArrayMesh and built-in shapes). Nothing was changed." % [mi.name, kind])
 	return false
+
+# An ArrayMesh with the same surfaces (geometry and material) as a built-in
+# shape, so MeshDataTool can edit it.
+func primitive_to_array_mesh(prim: PrimitiveMesh) -> ArrayMesh:
+	var out := ArrayMesh.new()
+	for s in prim.get_surface_count():
+		out.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, prim.surface_get_arrays(s))
+		out.surface_set_material(s, prim.surface_get_material(s))
+	return out
 
 # Meshes without a color array (e.g. imported .glb rocks) would get BLACK for
 # every vertex the brush doesn't touch (MeshDataTool's default), so start them
@@ -507,6 +525,7 @@ func forward_3d_input(camera: Camera3D, event: InputEvent) -> bool:
 		mesh_i = target
 		_stroke_down = event.pressed
 		if event.pressed:
+			_erasing = event.shift_pressed  # Shift+drag erases
 			start_paint(event)  # coroutine: continues after the depth readback
 		else:
 			stop_paint()
@@ -559,9 +578,20 @@ func apply_brush(vertices: Array[int]) -> void:
 		and mesh_paint_mode(mesh_i) == PaintMode.NORMAL
 	for idx in vertices:
 		var base: Color = _stroke_base[idx] if idx < _stroke_base.size() else active_mdt.get_vertex_color(idx)
-		active_mdt.set_vertex_color(idx, blend_paint(base, paint_color, opacity, normal))
+		var out := blend_erase(base, opacity, normal) if _erasing else blend_paint(base, paint_color, opacity, normal)
+		active_mdt.set_vertex_color(idx, out)
 	mesh_i.mesh.clear_surfaces()
 	active_mdt.commit_to_surface(mesh_i.mesh)
+
+# Shift+drag eraser dab, by the same opacity. Normal: the paint covers less
+# (alpha drops), so the material shows through again; color kept. Multiply:
+# back toward white, i.e. the texture unchanged.
+func blend_erase(base: Color, opacity: float, normal: bool) -> Color:
+	if normal:
+		return Color(base.r, base.g, base.b, base.a * (1.0 - opacity))
+	var restored := base.lerp(Color.WHITE, opacity)
+	restored.a = base.a
+	return restored
 
 # One dab. Multiply: move the factor toward the paint color (alpha untouched).
 # Normal: lay the paint over what's there ("over" compositing); alpha is how
@@ -792,7 +822,7 @@ func _build_brush_ui() -> void:
 
 	var shortcuts := Label.new()
 	shortcuts.name = "ShortcutHint"
-	shortcuts.text = "Ctrl+click: switch mesh\nAlt+click/drag: pick color\nA slider (in the picker): opacity"
+	shortcuts.text = "Shift+drag: erase\nCtrl+click: switch mesh\nAlt+click/drag: pick color\nA slider (in the picker): opacity"
 	shortcuts.modulate = Color(1, 1, 1, 0.7)
 	shortcuts.mouse_filter = Control.MOUSE_FILTER_PASS  # so the tooltip shows
 	shortcuts.tooltip_text = "While painting is enabled. It only picks when the selected mesh is under the cursor; elsewhere Alt+drag still reaches the editor (e.g. \"Emulate 3 Button Mouse\" orbit).\nSome Linux window managers use Alt+drag to move windows; Alt+click still works there."
