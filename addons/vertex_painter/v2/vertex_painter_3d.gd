@@ -218,7 +218,7 @@ func get_n_closest_vertices(mdt: MeshDataTool, mesh_pos: Vector3, \
 		else:
 			# after array fill, determine if largest should be replaced
 			var changes := []
-			var furthest_dist := 0
+			var furthest_dist := 0.0
 			var furthest_index := -1
 			for index in range(len(vertices)):
 				var vertex: Variant = vertices[index]
