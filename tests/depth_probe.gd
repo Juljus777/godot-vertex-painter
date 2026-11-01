@@ -211,6 +211,28 @@ func _paint_probe(p3d: Node, view_cam: Camera3D) -> bool:
 	print("PICK_PROBE alt_click picked=%s (RGB red, opacity kept 0.6) mesh_unchanged=%s %s" % [picker.color, unchanged,
 		"PASS" if pick_ok else "FAIL"])
 
+	# F14: right after painting the rock, press on a built-in PlaneMesh in front
+	# of it. It used to become a copy of the rock (stale MeshDataTool data).
+	var plane := MeshInstance3D.new()
+	var plane_mesh := PlaneMesh.new()
+	plane_mesh.size = Vector2(4, 4)
+	plane.mesh = plane_mesh
+	add_child(plane)
+	plane.global_transform = Transform3D(Basis(Vector3.RIGHT, PI / 2), Vector3(0, 0, -3))  # faces the camera
+	picker.color = Color(0, 1, 0, 1)
+	p3d.set_target(plane)
+	p3d.forward_3d_input(view_cam, press)
+	for i in 10:
+		await get_tree().process_frame
+	p3d.forward_3d_input(view_cam, release)
+	var hint: Label = painter.get_node("VBoxContainer/HintLabel")
+	var plane_ok: bool = plane.mesh == plane_mesh and plane.get_surface_override_material(0) == null \
+		and hint.visible and hint.text.contains("PlaneMesh")
+	print("PLANE_PROBE plane_still_PlaneMesh=%s (now %s) hint=%s %s" % [plane.mesh == plane_mesh,
+		plane.mesh.get_class(), hint.visible, "PASS" if plane_ok else "FAIL"])
+	plane.free()
+	pick_ok = pick_ok and plane_ok
+
 	enable.button_pressed = false
 	p3d.set_target(null)
 	rock.free()
