@@ -153,6 +153,63 @@ func _instance_steps() -> bool:
 	return ok
 
 
+## F13 in a real editor: switching a painted mesh's paint mode is one undoable
+## action, and a Normal-mode mesh is still Normal after save + reload (the
+## saved material references the shared paint_overlay.tres).
+const MODE_SCENE := "res://.godot/test-logs/f13_mode_probe.tscn"
+
+func _mode_steps() -> bool:
+	var ok := true
+	DirAccess.copy_absolute(ProjectSettings.globalize_path("res://tests/manual_test.tscn"),
+		ProjectSettings.globalize_path(MODE_SCENE))
+	EditorInterface.open_scene_from_path(MODE_SCENE)
+	await _wait()
+	EditorInterface.reload_scene_from_path(MODE_SCENE)
+	await _wait()
+	var root := EditorInterface.get_edited_scene_root()
+	var mesh: MeshInstance3D = root.get_node("PaintMe")
+	var check_box := _enable_check_box()
+	var painter: Node = check_box.get_node("../../VertexPainter3D")
+	var option: OptionButton = check_box.get_node("../ModeRow/ModeOption")
+	var selection := EditorInterface.get_selection()
+	selection.clear()
+	selection.add_node(mesh)
+	await _wait()
+	painter.prepare_paint_material(mesh, 0)  # as after a Multiply stroke
+	var mul_mesh := mesh.mesh
+	var mul_mat := mesh.get_surface_override_material(0)
+	selection.clear()
+	selection.add_node(mesh)  # re-sync the dropdown to the now-painted mesh
+	await _wait()
+	ok = _report("mode_setup", painter.mesh_paint_mode(mesh) == 0 and option.selected == 0) and ok
+
+	option.select(1)
+	option.item_selected.emit(1)
+	await _wait()
+	ok = _report("mode_switch_to_normal", painter.mesh_paint_mode(mesh) == 1) and ok
+	var history := get_undo_redo().get_history_undo_redo(get_undo_redo().get_object_history_id(root))
+	history.undo()
+	await _wait()
+	ok = _report("mode_switch_undo", painter.mesh_paint_mode(mesh) == 0 and mesh.mesh == mul_mesh
+		and mesh.get_surface_override_material(0) == mul_mat) and ok
+	history.redo()
+	await _wait()
+	ok = _report("mode_switch_redo", painter.mesh_paint_mode(mesh) == 1) and ok
+
+	var err := EditorInterface.save_scene()
+	await _wait()
+	var text := FileAccess.get_file_as_string(MODE_SCENE)
+	EditorInterface.reload_scene_from_path(MODE_SCENE)
+	await _wait()
+	var reloaded: MeshInstance3D = EditorInterface.get_edited_scene_root().get_node("PaintMe")
+	ok = _report("mode_normal_survives_save_reload", err == OK and text.contains("paint_overlay.tres")
+		and painter.mesh_paint_mode(reloaded) == 1, "save_err=%d" % err) and ok
+	selection.clear()
+	option.select(0)
+	await _wait()
+	return ok
+
+
 ## F8 in a real editor: Ctrl+click in the 3D viewport while painting selects
 ## the mesh under the cursor (instance root if not editable), moves the gizmo
 ## lock, and a Ctrl+click on empty space changes nothing.
@@ -260,6 +317,7 @@ func _run() -> void:
 	ok = await _lock_steps() and ok
 	ok = await _instance_steps() and ok
 	ok = await _ctrl_select_steps() and ok
+	ok = await _mode_steps() and ok
 	ok = await _step("disable", false, 0) and ok
 	ok = await _step("enable", true, 1) and ok
 	ok = await _step("disable2", false, 0) and ok
