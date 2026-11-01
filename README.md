@@ -20,6 +20,21 @@ https://github.com/bikemurt/godot-vertex-painter/assets/23486102/fea58b3f-8b71-4
 - v4.1.1
 
 ---
+**V2.1: November 1, 2026**
+- Ported to Godot 4.2 through 4.7, with a branch per version (`godot-4.2` … `godot-4.7`)
+- Painting uses the editor's 3D input: while painting, left clicks paint instead of selecting or moving things, the camera still works with right/middle mouse, and it works in any of the split 3D views
+- **Ctrl+click** switches to another mesh without leaving paint mode
+- The selected mesh's move/rotate/scale gizmo is hidden while painting is enabled
+- Rotated and scaled meshes paint in the right place
+- Meshes inside instanced scenes (e.g. imported `.glb` files) can be painted via an **Enable Editable Children** button in the dock
+- The paint is shown on the mesh's own material (its texture is multiplied by the vertex colors) instead of replacing it with a debug shader; meshes without vertex colors start white
+- Full color picker; its **A** (alpha) slider is the brush opacity, so strokes can build up gradually
+- **Alt+click / Alt+drag** picks a color from the painted mesh
+- Brush size is a slider with an adjustable maximum
+- Fixes: the brush painted the wrong vertices on small meshes, the mesh stayed locked after painting, and clicking empty space could paint the mesh
+- Automated test harness for development (`tests/`, not part of the addon)
+
+---
 **V2.0: May 6, 2024**
 - Paint directly on MeshInstance3Ds. StaticBodies are no longer required!
 - This is thanks to an updated algorithm to find the 3D surface: https://twitter.com/_michaeljared/status/1787020920751579407
