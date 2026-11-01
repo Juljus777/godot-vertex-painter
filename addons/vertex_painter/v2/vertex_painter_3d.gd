@@ -20,6 +20,11 @@ var active_mdt := MeshDataTool.new()
 var pre_mat
 var brush_size := 1
 var working := false
+# Set by the EditorPlugin: the MeshInstance3D being edited, and the camera and
+# viewport-local mouse position of the last forwarded 3D viewport event.
+var target: MeshInstance3D = null
+var view_camera: Camera3D = null
+var view_mouse_pos := Vector2.ZERO
 
 func set_screen_name(_screen: String) -> void:
 	screen = _screen
@@ -48,10 +53,11 @@ func click_raycast():
 
 # NEW ALGORITHM - Does not require a collider
 func click_raycast2(offset := Vector2(0,0)) -> Vector3:
-	var viewport = EditorInterface.get_editor_viewport_3d(0)
-	var mouse_pos = viewport.get_mouse_position() + offset
-	var camera = viewport.get_camera_3d()
-	
+	# Camera and position come from the forwarded event, so painting works in
+	# whichever 3D viewport (of up to four) the user is drawing in.
+	var mouse_pos := view_mouse_pos + offset
+	var camera := view_camera
+
 	#var from = camera.project_ray_origin(mouse_pos)
 	#var to = from + camera.project_ray_normal(mouse_pos) * 2.0
 	
@@ -71,7 +77,10 @@ func click_raycast2(offset := Vector2(0,0)) -> Vector3:
 		sub_viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
 		var vp_tex: ViewportTexture = sub_viewport.get_texture()
 		var vp_img := vp_tex.get_image()
-		
+		if vp_img == null or vp_img.is_empty():
+			# No depth image yet (or no renderer, e.g. headless): treat as a miss.
+			return Vector3(-INF, -INF, -INF)
+
 		var screen_depth = vp_img.get_pixel(0, 0).srgb_to_linear()
 		
 		var screen_rg = Vector2(screen_depth.r, screen_depth.g)
@@ -93,8 +102,6 @@ func start_paint(event: InputEvent) -> void:
 	mouse_camera_3d.show()
 	if show_debug_check_box.button_pressed:
 		debug.show()
-	mesh_i.set_meta("_edit_lock_", true)
-	mouse_camera_3d.show()
 	
 	var click_location := click_raycast2()
 	if click_location.is_finite():
@@ -128,10 +135,6 @@ func stop_paint() -> void:
 	if pre_mat == null:
 		pre_mat = VERTEX_COLOR
 		mesh_i.set_surface_override_material(0, pre_mat)
-	
-	# The editor treats a node as locked whenever this meta exists (has_meta),
-	# whatever its value, so it must be removed, not set to false.
-	mesh_i.remove_meta("_edit_lock_")
 
 	# legacy - remove static body children
 	#for c in mesh_i.get_children():
@@ -139,36 +142,44 @@ func stop_paint() -> void:
 	
 	click_active = false
 
-func process_click(event: InputEvent) -> void:
-	var mb_event: InputEventMouseButton = event
+# Called by the EditorPlugin's _edit(): the MeshInstance3D now being edited,
+# or null when the selection no longer contains one.
+func set_target(mesh: MeshInstance3D) -> void:
+	if click_active and mesh != target:
+		stop_paint()
+	target = mesh
 
-	if mb_event.button_index == 1:
-		
-		# get first mesh instanced selected node
-		var nodes := EditorInterface.get_selection().get_selected_nodes()
-		mesh_i = null
-		for n in nodes:
-			if n is MeshInstance3D:
-				mesh_i = n
-				break
-		
-		if mesh_i and mesh_i.name == "Debug":
-			mesh_i = null
-		
-		error = false
-		if mesh_i == null:
-			err("You must select a MeshInstance3D to vertex paint.")
-			error = true
-		if len(nodes) > 1:
-			err("Only select one mesh instance in the scene tree for painting.")
-			error = true
-		
-		if not error:
-			if mb_event.pressed:
-				start_paint(event)
-			
-			if not mb_event.pressed:
-				stop_paint()
+# Called by the EditorPlugin's _forward_3d_gui_input(). Returns true when the
+# event was used for painting; the editor then skips its own selection and
+# transform handling for it, so no edit lock is needed during a stroke.
+# Right/middle buttons, wheel and hover always pass through (camera navigation).
+func forward_3d_input(camera: Camera3D, event: InputEvent) -> bool:
+	if not enable_check_box.button_pressed or target == null:
+		return false
+
+	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
+		view_camera = camera
+		view_mouse_pos = event.position
+		mesh_i = target
+		if event.pressed:
+			start_paint(event)
+		else:
+			stop_paint()
+		# Consume every left click while painting is enabled, including misses,
+		# so clicking past the mesh doesn't deselect it mid-session.
+		return true
+
+	if event is InputEventMouseMotion and click_active:
+		if not (event.button_mask & MOUSE_BUTTON_MASK_LEFT):
+			# The release happened outside the viewport; end the stroke.
+			stop_paint()
+			return false
+		view_camera = camera
+		view_mouse_pos = event.position
+		process_move(event)
+		return true
+
+	return false
 
 func paint() -> void:
 		var result2 = click_raycast2()
@@ -261,30 +272,6 @@ func set_brush_size() -> void:
 func _ready() -> void:
 	set_brush_size()
 
-func _input(event: InputEvent) -> void:
-	if not enable_check_box.button_pressed: return
-	
-	if screen != "3D": return
-	
-	if not (event is InputEventMouseButton) and \
-		not (event is InputEventMouseMotion): return
-	
-	# check within viewport bounds
-	var evnp: Vector2 = event.position
-	var scrn := EditorInterface.get_editor_main_screen()
-	var s_pos := scrn.global_position
-	var s_size := scrn.size
-	if evnp.x > s_pos.x \
-		and evnp.y > s_pos.y + 30 \
-		and evnp.x < s_pos.x + s_size.x \
-		and evnp.y < s_pos.y + s_size.y:
-		if event is InputEventMouseButton:
-			process_click(event)
-			
-		if event is InputEventMouseMotion:
-			if click_active and not error:
-				process_move(event)
-		
 func _on_brush_line_edit_text_submitted(new_text):
 	set_brush_size()
 
