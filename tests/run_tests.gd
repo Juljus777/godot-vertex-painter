@@ -90,8 +90,23 @@ func test_instantiate_painter_scene() -> void:
 		"SubViewport/MouseCamera3D/ScreenQuad exists")
 	if p3d != null:
 		check(p3d.brush_size == 5, "brush size parsed from BrushLineEdit (5)")
+		test_stop_paint_unlocks(p3d)
 	inst.queue_free()
 	await process_frame
+
+
+# B9: stop_paint() must REMOVE _edit_lock_. The editor checks has_meta() for
+# the lock icon, gizmos and applying transforms, so a meta set to false still
+# leaves the mesh locked after the first stroke.
+func test_stop_paint_unlocks(p3d: Node) -> void:
+	var mi := MeshInstance3D.new()
+	mi.mesh = BoxMesh.new()
+	root.add_child(mi)
+	mi.set_meta("_edit_lock_", true)  # what start_paint() does
+	p3d.mesh_i = mi
+	p3d.stop_paint()
+	check(not mi.has_meta("_edit_lock_"), "B9: stop_paint() removes _edit_lock_ meta")
+	mi.free()
 
 
 # --- 3. MeshDataTool round trip (same flow as start_paint()/paint()) --------
