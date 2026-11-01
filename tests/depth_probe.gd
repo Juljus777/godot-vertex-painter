@@ -69,6 +69,87 @@ func _to_depth(normalized_distance: float) -> float:
 	return normalized_distance * mouse_camera_3d.far
 
 
+func _paint_probe(p3d: Node, view_cam: Camera3D) -> bool:
+	var sphere := SphereMesh.new()
+	sphere.radial_segments = 24
+	sphere.rings = 12
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, sphere.get_mesh_arrays())
+	var tex := GradientTexture2D.new()
+	var original := StandardMaterial3D.new()
+	original.albedo_texture = tex
+	mesh.surface_set_material(0, original)
+	var rock := MeshInstance3D.new()
+	rock.mesh = mesh
+	add_child(rock)
+	rock.global_transform = Transform3D(
+		Basis(Vector3(0.3, 1, 0.2).normalized(), 1.1).scaled(Vector3(1.6, 0.8, 1.2)), Vector3(0, 0, -6))
+	var picker: ColorPicker = painter.get_node("VBoxContainer/ColorPicker")
+	picker.color = Color(1, 0, 0)
+	var enable: CheckBox = painter.get_node("VBoxContainer/EnableCheckBox")
+	enable.button_pressed = true
+	p3d.set_target(rock)
+	var center := view_cam.get_viewport().get_visible_rect().size / 2.0
+	var press := InputEventMouseButton.new()
+	press.button_index = MOUSE_BUTTON_LEFT
+	press.pressed = true
+	press.position = center
+	var consumed: bool = p3d.forward_3d_input(view_cam, press)
+	for i in 10:  # depth readback + first paint
+		await get_tree().process_frame
+	var release := InputEventMouseButton.new()
+	release.button_index = MOUSE_BUTTON_LEFT
+	release.position = center
+	p3d.forward_3d_input(view_cam, release)
+	var hit: Vector3 = p3d.debug.global_position
+
+	var arrays := rock.mesh.surface_get_arrays(0)
+	var colors = arrays[Mesh.ARRAY_COLOR]
+	var verts: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
+	var red := 0
+	var white := 0
+	var far := 0.0
+	if colors != null:
+		for i in colors.size():
+			if colors[i].is_equal_approx(Color(1, 0, 0)):
+				red += 1
+				far = maxf(far, (rock.global_transform * verts[i]).distance_to(hit))
+			elif colors[i].is_equal_approx(Color.WHITE):
+				white += 1
+	var used := rock.get_surface_override_material(0) as StandardMaterial3D
+	var mat_ok: bool = used != null and used != original and used.vertex_color_use_as_albedo \
+		and used.albedo_texture == tex and not original.vertex_color_use_as_albedo
+	var stroke_ok: bool = consumed and colors != null and red == p3d.brush_size \
+		and white == colors.size() - red and far < 0.6
+	print("PAINT_PROBE consumed=%s painted=%d (brush %d) others_white=%s max_dist_from_hit=%.3f %s" % [
+		consumed, red, p3d.brush_size, colors != null and white == colors.size() - red, far,
+		"PASS" if stroke_ok else "FAIL"])
+	print("PAINT_MATERIAL_PROBE copy_with_vertex_color=%s texture_kept=%s original_untouched=%s %s" % [
+		used != null and used.vertex_color_use_as_albedo, used != null and used.albedo_texture == tex,
+		not original.vertex_color_use_as_albedo, "PASS" if mat_ok else "FAIL"])
+
+	# F7: "Pick Color from Mesh" on the spot just painted red takes red back,
+	# turns itself off, and paints nothing.
+	picker.color = Color.WHITE
+	var pick_button: Button = painter.get_node("VBoxContainer/PickColorButton")
+	pick_button.button_pressed = true
+	var colors_before = rock.mesh.surface_get_arrays(0)[Mesh.ARRAY_COLOR]
+	p3d.forward_3d_input(view_cam, press)
+	for i in 6:
+		await get_tree().process_frame
+	p3d.forward_3d_input(view_cam, release)
+	var pick_ok: bool = picker.color.is_equal_approx(Color(1, 0, 0)) and not pick_button.button_pressed \
+		and rock.mesh.surface_get_arrays(0)[Mesh.ARRAY_COLOR] == colors_before
+	print("PICK_PROBE picked=%s button_off=%s mesh_unchanged=%s %s" % [picker.color,
+		not pick_button.button_pressed, rock.mesh.surface_get_arrays(0)[Mesh.ARRAY_COLOR] == colors_before,
+		"PASS" if pick_ok else "FAIL"])
+
+	enable.button_pressed = false
+	p3d.set_target(null)
+	rock.free()
+	return stroke_ok and mat_ok and pick_ok
+
+
 func _run() -> void:
 	print("Godot %s, renderer %s" % [Engine.get_version_info().string,
 		ProjectSettings.get_setting("rendering/renderer/rendering_method")])
@@ -129,6 +210,10 @@ func _run() -> void:
 	var sky_ok := not sky.is_finite()
 	ok = ok and sky_ok
 	print("RAYCAST_SKY_AFTER_HIT_PROBE got=%s %s" % [sky, "PASS" if sky_ok else "FAIL"])
+
+	# F6: a full stroke through forward_3d_input() on a rotated, non-uniformly
+	# scaled, textured mesh with no vertex colors (like an atmosphere rock).
+	ok = await _paint_probe(p3d, view_cam) and ok
 	view_cam.free()
 
 	print("DEPTH_PROBE_RESULT %s" % ("PASS" if ok else "FAIL"))
