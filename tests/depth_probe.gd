@@ -123,14 +123,24 @@ func _mode_render_probe(p3d: Node) -> bool:
 	p3d.apply_brush(all)
 	var painted: Color = await _render_pixel(sv)
 
+	# F16: a full-opacity erase removes the Normal paint: the blue shows again.
+	p3d.begin_stroke_colors()
+	p3d._erasing = true
+	p3d.apply_brush(all)
+	p3d._erasing = false
+	var erased: Color = await _render_pixel(sv)
+	p3d.begin_stroke_colors()
+	p3d.apply_brush(all)  # paint red again for the Multiply conversion below
+
 	p3d.convert_mesh_mode(quad, 0)  # -> Multiply
 	var multiplied: Color = await _render_pixel(sv)
 
 	var ok: bool = unpainted.b > 0.2 and unpainted.b > unpainted.r * 3.0 \
+		and erased.b > 0.2 and erased.b > erased.r * 3.0 \
 		and painted.r > 0.2 and painted.r > painted.b * 3.0 \
 		and multiplied.r < 0.15 and multiplied.g < 0.15 and multiplied.b < 0.15  # black albedo; ~0.1 is the lit floor
-	print("MODE_RENDER_PROBE normal_unpainted=%s normal_painted_red=%s multiply_blue_x_red=%s %s" % [
-		unpainted, painted, multiplied, "PASS" if ok else "FAIL"])
+	print("MODE_RENDER_PROBE normal_unpainted=%s normal_painted_red=%s erased=%s multiply_blue_x_red=%s %s" % [
+		unpainted, painted, erased, multiplied, "PASS" if ok else "FAIL"])
 	option.select(0)
 	p3d.mesh_i = null
 	sv.free()

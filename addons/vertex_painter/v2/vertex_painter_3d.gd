@@ -45,6 +45,8 @@ var view_mouse_pos := Vector2.ZERO
 var _stroke_down := false
 # True between a consumed Ctrl+click press and its release.
 var _ctrl_select_down := false
+# True for a stroke started with Shift held: it erases instead of painting.
+var _erasing := false
 # The mesh WE put an editor lock on (null if none). See _update_paint_lock().
 var _locked_mesh: MeshInstance3D = null
 # Dock hint for an instanced scene whose mesh can't be painted yet.
@@ -523,6 +525,7 @@ func forward_3d_input(camera: Camera3D, event: InputEvent) -> bool:
 		mesh_i = target
 		_stroke_down = event.pressed
 		if event.pressed:
+			_erasing = event.shift_pressed  # Shift+drag erases
 			start_paint(event)  # coroutine: continues after the depth readback
 		else:
 			stop_paint()
@@ -575,9 +578,20 @@ func apply_brush(vertices: Array[int]) -> void:
 		and mesh_paint_mode(mesh_i) == PaintMode.NORMAL
 	for idx in vertices:
 		var base: Color = _stroke_base[idx] if idx < _stroke_base.size() else active_mdt.get_vertex_color(idx)
-		active_mdt.set_vertex_color(idx, blend_paint(base, paint_color, opacity, normal))
+		var out := blend_erase(base, opacity, normal) if _erasing else blend_paint(base, paint_color, opacity, normal)
+		active_mdt.set_vertex_color(idx, out)
 	mesh_i.mesh.clear_surfaces()
 	active_mdt.commit_to_surface(mesh_i.mesh)
+
+# Shift+drag eraser dab, by the same opacity. Normal: the paint covers less
+# (alpha drops), so the material shows through again; color kept. Multiply:
+# back toward white, i.e. the texture unchanged.
+func blend_erase(base: Color, opacity: float, normal: bool) -> Color:
+	if normal:
+		return Color(base.r, base.g, base.b, base.a * (1.0 - opacity))
+	var restored := base.lerp(Color.WHITE, opacity)
+	restored.a = base.a
+	return restored
 
 # One dab. Multiply: move the factor toward the paint color (alpha untouched).
 # Normal: lay the paint over what's there ("over" compositing); alpha is how
@@ -808,7 +822,7 @@ func _build_brush_ui() -> void:
 
 	var shortcuts := Label.new()
 	shortcuts.name = "ShortcutHint"
-	shortcuts.text = "Ctrl+click: switch mesh\nAlt+click/drag: pick color\nA slider (in the picker): opacity"
+	shortcuts.text = "Shift+drag: erase\nCtrl+click: switch mesh\nAlt+click/drag: pick color\nA slider (in the picker): opacity"
 	shortcuts.modulate = Color(1, 1, 1, 0.7)
 	shortcuts.mouse_filter = Control.MOUSE_FILTER_PASS  # so the tooltip shows
 	shortcuts.tooltip_text = "While painting is enabled. It only picks when the selected mesh is under the cursor; elsewhere Alt+drag still reaches the editor (e.g. \"Emulate 3 Button Mouse\" orbit).\nSome Linux window managers use Alt+drag to move windows; Alt+click still works there."

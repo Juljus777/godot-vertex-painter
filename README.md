@@ -35,7 +35,8 @@ https://github.com/bikemurt/godot-vertex-painter/assets/23486102/fea58b3f-8b71-4
 - Meshes inside instanced scenes (e.g. imported `.glb` files) can be painted via an **Enable Editable Children** button in the dock
 - The paint is shown on the mesh's own material instead of replacing it with a debug shader, in one of two modes per mesh: **Multiply** (texture × paint) or **Normal** (paint covers the texture); switching a painted mesh converts it
 - Full color picker; its **A** (alpha) slider is the brush opacity, so strokes can build up gradually
-- **Alt+click / Alt+drag** picks a color from the painted mesh
+- **Alt+click / Alt+drag** picks a color from the painted mesh; **Shift+drag** erases
+- Built-in shapes (PlaneMesh, BoxMesh, …) can be painted
 - Brush size is a slider with an adjustable maximum
 - Fixes: the brush painted the wrong vertices on small meshes, the mesh stayed locked after painting, and clicking empty space could paint the mesh
 - Automated test harness for development (`tests/`, not part of the addon)
@@ -56,6 +57,7 @@ https://github.com/bikemurt/godot-vertex-painter/assets/23486102/fea58b3f-8b71-4
 
 **While painting is enabled**
 - Left drag: paint. Right/middle mouse still move the camera.
+- **Shift+drag**: erase (Normal: removes the paint so the texture shows again; Multiply: back toward white). Uses the A slider too.
 - **Ctrl+click**: switch to another mesh.
 - **Alt+click / Alt+drag** on the mesh: pick a color from it.
 - The color picker's **A** slider is the opacity; low values build up over several strokes.
