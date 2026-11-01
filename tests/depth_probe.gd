@@ -263,6 +263,93 @@ func _ground_hit(cam: Camera3D, pos: Vector2, y: float) -> Vector3:
 	return o + dir * ((y - o.y) / dir.y)
 
 
+## F19: painting the plane while the cursor is over ANOTHER mesh. A big box
+## stands beyond the plane's far edge (like the huge rocks around a level's
+## ground). Pressing on the box used to paint the plane's vertices nearest to
+## the box hit, i.e. on the plane's edge. Now: nothing is painted. And a box
+## standing ON the plane must not stop painting the plane under the cursor.
+func _edge_probe(p3d: Node, view_cam: Camera3D) -> bool:
+	var plane := MeshInstance3D.new()
+	var pm := PlaneMesh.new()
+	pm.size = Vector2(40, 40)
+	pm.subdivide_width = 19
+	pm.subdivide_depth = 19
+	plane.mesh = pm
+	plane.position = Vector3(0, -10, -30)  # spans z = -10 .. -50
+	add_child(plane)
+	var box := MeshInstance3D.new()
+	var bm := BoxMesh.new()
+	bm.size = Vector3(60, 60, 4)
+	box.mesh = bm
+	box.position = Vector3(0, 10, -80)  # beyond the plane's far edge
+	add_child(box)
+	var enable: CheckBox = painter.get_node("VBoxContainer/EnableCheckBox")
+	var picker: ColorPicker = painter.get_node("VBoxContainer/ColorPicker")
+	enable.button_pressed = true
+	p3d.set_target(plane)
+	picker.color = Color(1, 1, 0, 1)
+	var center := view_cam.get_viewport().get_visible_rect().size / 2.0
+	var on_box := view_cam.unproject_position(box.position)
+	await _click(p3d, view_cam, center + Vector2(0, center.y * 0.6))  # on the plane: first stroke
+	var before: PackedColorArray = plane.mesh.surface_get_arrays(0)[Mesh.ARRAY_COLOR]
+	await _click(p3d, view_cam, on_box)
+	var after: PackedColorArray = plane.mesh.surface_get_arrays(0)[Mesh.ARRAY_COLOR]
+	var changed := 0
+	for v in after.size():
+		if not after[v].is_equal_approx(before[v]):
+			changed += 1
+	var off_ok := changed == 0
+	print("EDGE_PROBE press on another mesh beyond the plane: plane vertices painted=%d (expected 0) %s" % [
+		changed, "PASS" if off_ok else "FAIL"])
+
+	# A second box ON the plane, between camera and plane: pressing on it paints
+	# the plane underneath (the selected mesh), not the box's surface point.
+	var cover := MeshInstance3D.new()
+	var cm := BoxMesh.new()
+	cm.size = Vector3(6, 6, 6)
+	cover.mesh = cm
+	cover.position = Vector3(0, -7, -25)
+	add_child(cover)
+	var on_cover := view_cam.unproject_position(Vector3(0, -6, -22))  # cover's front face; the ray meets the plane at z = -36.7
+	var o := view_cam.project_ray_origin(on_cover)
+	var dir := view_cam.project_ray_normal(on_cover)
+	var under := o + dir * ((-10.0 - o.y) / dir.y)  # where the ray meets the plane
+	picker.color = Color(0, 1, 1, 1)
+	await _click(p3d, view_cam, on_cover)
+	var verts: PackedVector3Array = plane.mesh.surface_get_arrays(0)[Mesh.ARRAY_VERTEX]
+	var cols: PackedColorArray = plane.mesh.surface_get_arrays(0)[Mesh.ARRAY_COLOR]
+	var far := 0.0
+	var n := 0
+	for v in cols.size():
+		if cols[v].is_equal_approx(Color(0, 1, 1, 1)):
+			n += 1
+			far = maxf(far, (plane.global_transform * verts[v]).distance_to(under))
+	var through_ok: bool = n > 0 and far < 4.0
+	print("EDGE_PROBE press on a mesh in front of the plane: painted=%d at most %.1f m from the plane point under the cursor %s" % [
+		n, far, "PASS" if through_ok else "FAIL"])
+	enable.button_pressed = false
+	p3d.set_target(null)
+	plane.free()
+	box.free()
+	cover.free()
+	return off_ok and through_ok
+
+
+func _click(p3d: Node, cam: Camera3D, pos: Vector2) -> void:
+	var press := InputEventMouseButton.new()
+	press.button_index = MOUSE_BUTTON_LEFT
+	press.pressed = true
+	press.position = pos
+	p3d.forward_3d_input(cam, press)
+	for i in 8:
+		await get_tree().process_frame
+	var release := press.duplicate() as InputEventMouseButton
+	release.pressed = false
+	p3d.forward_3d_input(cam, release)
+	for i in 8:
+		await get_tree().process_frame
+
+
 func _paint_probe(p3d: Node, view_cam: Camera3D) -> bool:
 	var sphere := SphereMesh.new()
 	sphere.radial_segments = 24
@@ -383,6 +470,9 @@ func _run() -> void:
 	var ok := true
 	var origin := Vector3.ZERO
 	var forward := Vector3(0, 0, -1)
+	# F19: the depth camera renders only the paint target, which carries the
+	# paint layer while painting is on. These raw depth checks stand in for that.
+	target.layers |= painter.get_node("VertexPainter3D").PAINT_LAYER
 
 	for d in HIT_DISTANCES:
 		target.global_position = origin + forward * d
@@ -439,6 +529,7 @@ func _run() -> void:
 	ok = await _mode_render_probe(p3d) and ok
 	ok = await _halo_probe(p3d) and ok
 	ok = await _stroke_probe(p3d, view_cam) and ok
+	ok = await _edge_probe(p3d, view_cam) and ok
 	view_cam.free()
 
 	print("DEPTH_PROBE_RESULT %s" % ("PASS" if ok else "FAIL"))
