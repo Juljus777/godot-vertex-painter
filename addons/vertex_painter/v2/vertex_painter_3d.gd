@@ -44,7 +44,9 @@ var _hint_mesh: MeshInstance3D = null
 # Brush controls built in code (see _build_brush_ui()).
 var _opacity_slider: HSlider
 var _opacity_value: Label
-var _pick_button: Button
+# Alt+click/drag eyedropper state (see forward_3d_input()).
+var _alt_pick_down := false
+var _pick_busy := false
 # Vertex colors at the start of the current stroke. Opacity blends from these,
 # so going over the same spot within one stroke never exceeds the opacity.
 var _stroke_base := PackedColorArray()
@@ -344,7 +346,27 @@ func selectable_node_for(mesh: Node, scene_root: Node) -> Node:
 # transform handling for it, so no edit lock is needed during a stroke.
 # Right/middle buttons, wheel and hover always pass through (camera navigation).
 func forward_3d_input(camera: Camera3D, event: InputEvent) -> bool:
-	var picking: bool = _pick_button != null and _pick_button.button_pressed
+	# Alt+click / Alt+drag while painting: pick the color under the cursor
+	# (eyedropper) instead of painting. Keeps picking while dragging.
+	if enable_check_box.button_pressed and target != null:
+		if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
+			if event.pressed and event.alt_pressed:
+				_alt_pick_down = true
+				view_camera = camera
+				view_mouse_pos = event.position
+				_pick_color()
+				return true
+			if not event.pressed and _alt_pick_down:
+				_alt_pick_down = false
+				return true  # the release belongs to the pick
+		if _alt_pick_down and event is InputEventMouseMotion:
+			if not (event.button_mask & MOUSE_BUTTON_MASK_LEFT):
+				_alt_pick_down = false  # released outside the viewport
+				return false
+			view_camera = camera
+			view_mouse_pos = event.position
+			_pick_color()
+			return true
 
 	# Ctrl+click while painting: select the mesh under the cursor instead of
 	# painting (the editor's own Ctrl+click would start a rotate). Works even
@@ -361,7 +383,7 @@ func forward_3d_input(camera: Camera3D, event: InputEvent) -> bool:
 	if _ctrl_select_down and event is InputEventMouseMotion:
 		return true  # don't let a Ctrl+drag reach the editor
 
-	if not (enable_check_box.button_pressed or picking) or target == null:
+	if not enable_check_box.button_pressed or target == null:
 		return false
 
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
@@ -369,9 +391,7 @@ func forward_3d_input(camera: Camera3D, event: InputEvent) -> bool:
 		view_mouse_pos = event.position
 		mesh_i = target
 		_stroke_down = event.pressed
-		if event.pressed and picking:
-			_pick_color()  # coroutine; never paints
-		elif event.pressed:
+		if event.pressed:
 			start_paint(event)  # coroutine: continues after the depth readback
 		else:
 			stop_paint()
@@ -438,17 +458,20 @@ func color_at(mi: MeshInstance3D, world_point: Vector3) -> Color:
 	var idx := get_closest_vertex(mdt, mi.global_transform, world_point)
 	return mdt.get_vertex_color(idx) if idx >= 0 else Color.WHITE
 
-# "Pick from mesh": take the color under the cursor instead of painting.
-# One-shot, like an eyedropper: the button turns itself off afterwards.
+# Alt+click eyedropper: take the color under the cursor instead of painting.
+# One depth readback at a time; drag events arriving meanwhile are skipped.
 func _pick_color() -> void:
+	if _pick_busy:
+		return
+	_pick_busy = true
 	mouse_camera_3d.show()
 	var hit: Vector3 = await click_raycast2()
 	mouse_camera_3d.hide()
+	_pick_busy = false
 	if hit.is_finite() and is_instance_valid(target):
 		var picked := color_at(target, hit)
 		picked.a = 1.0
 		color_picker.color = picked
-	_pick_button.button_pressed = false
 
 func legacy_paint() -> void:
 	var result = click_raycast()
@@ -560,13 +583,14 @@ func _build_brush_ui() -> void:
 	opacity_row.add_child(_opacity_slider)
 	opacity_row.add_child(_opacity_value)
 
-	_pick_button = Button.new()
-	_pick_button.name = "PickColorButton"
-	_pick_button.text = "Pick Color from Mesh"
-	_pick_button.toggle_mode = true
-	_pick_button.tooltip_text = "Then click the selected mesh in the 3D view to take the color under the cursor."
+	var shortcuts := Label.new()
+	shortcuts.name = "ShortcutHint"
+	shortcuts.text = "Ctrl+click: switch mesh\nAlt+click/drag: pick color"
+	shortcuts.modulate = Color(1, 1, 1, 0.7)
+	shortcuts.mouse_filter = Control.MOUSE_FILTER_PASS  # so the tooltip shows
+	shortcuts.tooltip_text = "While painting is enabled. Alt+left-drag overrides the editor's \"Emulate 3 Button Mouse\" orbit while painting.\nSome Linux window managers use Alt+drag to move windows; Alt+click still works there."
 
-	brush_line_edit.add_sibling(_pick_button)
+	brush_line_edit.add_sibling(shortcuts)
 	brush_line_edit.add_sibling(opacity_row)
 
 func _build_hint_ui() -> void:
