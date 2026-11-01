@@ -33,6 +33,8 @@ var view_mouse_pos := Vector2.ZERO
 # True between a consumed left press and its release. click_active only turns
 # on once the (asynchronous) depth readback confirms the press hit the mesh.
 var _stroke_down := false
+# True between a consumed Ctrl+click press and its release.
+var _ctrl_select_down := false
 # The mesh WE put an editor lock on (null if none). See _update_paint_lock().
 var _locked_mesh: MeshInstance3D = null
 # Dock hint for an instanced scene whose mesh can't be painted yet.
@@ -282,12 +284,87 @@ func _exit_tree() -> void:
 	if _release_paint_lock():
 		_refresh_editor_gizmo()
 
+# Ctrl+click selection. Ray-tests every MeshInstance3D in the edited scene
+# (bounding box first, then its actual triangles) and selects the nearest hit;
+# a mesh inside a non-editable instanced scene selects that instance (like the
+# editor does), which then shows the "Enable Editable Children" hint.
+func select_mesh_under_cursor(camera: Camera3D, screen_pos: Vector2) -> void:
+	var scene_root := EditorInterface.get_edited_scene_root()
+	if scene_root == null:
+		return
+	var origin := camera.project_ray_origin(screen_pos)
+	var direction := camera.project_ray_normal(screen_pos)
+	var hit := mesh_under_ray(scene_root, origin, direction)
+	if hit == null:
+		return
+	var node := selectable_node_for(hit, scene_root)
+	var selection := EditorInterface.get_selection()
+	selection.clear()
+	selection.add_node(node)
+
+# Nearest visible MeshInstance3D under `root` hit by the world-space ray, or null.
+func mesh_under_ray(root: Node, origin: Vector3, direction: Vector3) -> MeshInstance3D:
+	var best: MeshInstance3D = null
+	var best_dist := INF
+	var meshes := root.find_children("*", "MeshInstance3D", true, false)
+	if root is MeshInstance3D:
+		meshes.append(root)
+	for n in meshes:
+		var mi := n as MeshInstance3D
+		if mi.mesh == null or not mi.is_visible_in_tree():
+			continue
+		var dist := ray_hit_distance(mi, origin, direction)
+		if dist < best_dist:
+			best_dist = dist
+			best = mi
+	return best
+
+# World distance along the ray to the mesh's surface, or INF if it misses.
+func ray_hit_distance(mi: MeshInstance3D, origin: Vector3, direction: Vector3) -> float:
+	var inv := mi.global_transform.affine_inverse()
+	var local_origin := inv * origin
+	var local_dir := inv.basis * direction
+	if mi.mesh.get_aabb().intersects_ray(local_origin, local_dir) == null:
+		return INF
+	var faces := mi.mesh.get_faces()
+	var nearest := INF
+	for i in range(0, faces.size(), 3):
+		var p = Geometry3D.ray_intersects_triangle(local_origin, local_dir, faces[i], faces[i + 1], faces[i + 2])
+		if p != null:
+			nearest = minf(nearest, origin.distance_to(mi.global_transform * (p as Vector3)))
+	return nearest
+
+# What the editor would select for a click on `mesh`: the mesh itself, or the
+# outermost instanced scene whose children aren't editable.
+func selectable_node_for(mesh: Node, scene_root: Node) -> Node:
+	var node := mesh
+	while node != scene_root and node.owner != null and node.owner != scene_root \
+			and not scene_root.is_editable_instance(node.owner):
+		node = node.owner
+	return node
+
 # Called by the EditorPlugin's _forward_3d_gui_input(). Returns true when the
 # event was used for painting; the editor then skips its own selection and
 # transform handling for it, so no edit lock is needed during a stroke.
 # Right/middle buttons, wheel and hover always pass through (camera navigation).
 func forward_3d_input(camera: Camera3D, event: InputEvent) -> bool:
 	var picking: bool = _pick_button != null and _pick_button.button_pressed
+
+	# Ctrl+click while painting: select the mesh under the cursor instead of
+	# painting (the editor's own Ctrl+click would start a rotate). Works even
+	# when nothing is selected yet; the plugin gets all 3D input for this.
+	if enable_check_box.button_pressed and event is InputEventMouseButton \
+			and event.button_index == MOUSE_BUTTON_LEFT:
+		if event.pressed and event.is_command_or_control_pressed():
+			_ctrl_select_down = true
+			select_mesh_under_cursor(camera, event.position)
+			return true
+		if not event.pressed and _ctrl_select_down:
+			_ctrl_select_down = false
+			return true  # the release belongs to the Ctrl+click
+	if _ctrl_select_down and event is InputEventMouseMotion:
+		return true  # don't let a Ctrl+drag reach the editor
+
 	if not (enable_check_box.button_pressed or picking) or target == null:
 		return false
 

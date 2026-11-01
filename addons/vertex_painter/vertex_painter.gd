@@ -7,6 +7,9 @@ const MAIN_SCREEN = preload("res://addons/vertex_painter/v2/vertex_painter.tscn"
 var main_panel_instance: VertexPainter
 
 func _enter_tree():
+	# Receive 3D viewport input even when no mesh is selected, so Ctrl+click
+	# can pick one while painting. forward_3d_input() passes everything else on.
+	set_input_event_forwarding_always_enabled()
 	main_panel_instance = MAIN_SCREEN.instantiate()
 	
 	main_panel_instance.set_interface(get_editor_interface())
