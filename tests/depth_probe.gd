@@ -123,14 +123,24 @@ func _mode_render_probe(p3d: Node) -> bool:
 	p3d.apply_brush(all)
 	var painted: Color = await _render_pixel(sv)
 
+	# F16: a full-opacity erase removes the Normal paint: the blue shows again.
+	p3d.begin_stroke_colors()
+	p3d._erasing = true
+	p3d.apply_brush(all)
+	p3d._erasing = false
+	var erased: Color = await _render_pixel(sv)
+	p3d.begin_stroke_colors()
+	p3d.apply_brush(all)  # paint red again for the Multiply conversion below
+
 	p3d.convert_mesh_mode(quad, 0)  # -> Multiply
 	var multiplied: Color = await _render_pixel(sv)
 
 	var ok: bool = unpainted.b > 0.2 and unpainted.b > unpainted.r * 3.0 \
+		and erased.b > 0.2 and erased.b > erased.r * 3.0 \
 		and painted.r > 0.2 and painted.r > painted.b * 3.0 \
 		and multiplied.r < 0.15 and multiplied.g < 0.15 and multiplied.b < 0.15  # black albedo; ~0.1 is the lit floor
-	print("MODE_RENDER_PROBE normal_unpainted=%s normal_painted_red=%s multiply_blue_x_red=%s %s" % [
-		unpainted, painted, multiplied, "PASS" if ok else "FAIL"])
+	print("MODE_RENDER_PROBE normal_unpainted=%s normal_painted_red=%s erased=%s multiply_blue_x_red=%s %s" % [
+		unpainted, painted, erased, multiplied, "PASS" if ok else "FAIL"])
 	option.select(0)
 	p3d.mesh_i = null
 	sv.free()
@@ -211,25 +221,35 @@ func _paint_probe(p3d: Node, view_cam: Camera3D) -> bool:
 	print("PICK_PROBE alt_click picked=%s (RGB red, opacity kept 0.6) mesh_unchanged=%s %s" % [picker.color, unchanged,
 		"PASS" if pick_ok else "FAIL"])
 
-	# F14: right after painting the rock, press on a built-in PlaneMesh in front
-	# of it. It used to become a copy of the rock (stale MeshDataTool data).
+	# F14/F15: right after painting the rock, paint a built-in PlaneMesh in front
+	# of it. It used to become a copy of the rock (stale MeshDataTool data); now
+	# it becomes an editable copy of the PLANE and gets the paint.
 	var plane := MeshInstance3D.new()
 	var plane_mesh := PlaneMesh.new()
 	plane_mesh.size = Vector2(4, 4)
+	plane_mesh.subdivide_width = 7
+	plane_mesh.subdivide_depth = 7
 	plane.mesh = plane_mesh
 	add_child(plane)
 	plane.global_transform = Transform3D(Basis(Vector3.RIGHT, PI / 2), Vector3(0, 0, -3))  # faces the camera
+	var plane_verts := (plane_mesh.get_mesh_arrays()[Mesh.ARRAY_VERTEX] as PackedVector3Array).size()
 	picker.color = Color(0, 1, 0, 1)
 	p3d.set_target(plane)
 	p3d.forward_3d_input(view_cam, press)
 	for i in 10:
 		await get_tree().process_frame
 	p3d.forward_3d_input(view_cam, release)
-	var hint: Label = painter.get_node("VBoxContainer/HintLabel")
-	var plane_ok: bool = plane.mesh == plane_mesh and plane.get_surface_override_material(0) == null \
-		and hint.visible and hint.text.contains("PlaneMesh")
-	print("PLANE_PROBE plane_still_PlaneMesh=%s (now %s) hint=%s %s" % [plane.mesh == plane_mesh,
-		plane.mesh.get_class(), hint.visible, "PASS" if plane_ok else "FAIL"])
+	var green := 0
+	var plane_colors = plane.mesh.surface_get_arrays(0)[Mesh.ARRAY_COLOR] if plane.mesh is ArrayMesh else null
+	if plane_colors != null:
+		for c in plane_colors:
+			if c.is_equal_approx(Color(0, 1, 0, 1)):
+				green += 1
+	var plane_count: int = (plane.mesh.surface_get_arrays(0)[Mesh.ARRAY_VERTEX] as PackedVector3Array).size()
+	var plane_ok: bool = plane.mesh is ArrayMesh and plane_count == plane_verts and green == p3d.brush_size
+	print("PLANE_PROBE plane_vertices=%d (own %d, rock %d) painted_green=%d %s" % [plane_count, plane_verts,
+		(rock.mesh.surface_get_arrays(0)[Mesh.ARRAY_VERTEX] as PackedVector3Array).size(), green,
+		"PASS" if plane_ok else "FAIL"])
 	plane.free()
 	pick_ok = pick_ok and plane_ok
 
