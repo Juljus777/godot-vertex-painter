@@ -882,9 +882,17 @@ func _ready() -> void:
 	# The depth readback sees only the paint target (see PAINT_LAYER); its
 	# screen quad must be on that layer too, to be drawn at all.
 	mouse_camera_3d.cull_mask = PAINT_LAYER
-	var quad := mouse_camera_3d.get_node_or_null("ScreenQuad") as VisualInstance3D
+	var quad := mouse_camera_3d.get_node_or_null("ScreenQuad") as MeshInstance3D
 	if quad:
 		quad.layers = PAINT_LAYER
+		# The quad writes the encoded depth in the transparent pass, which is
+		# sorted by distance. Normal mode's paint overlay is drawn there too,
+		# and on a big mesh seen at an angle it sorted after the quad and
+		# blended paint colors over the depth bytes: hits landed far away
+		# (paint scattered over the mesh's edge). Always draw the quad last.
+		var depth_mat := quad.get_surface_override_material(0)
+		if depth_mat:
+			depth_mat.render_priority = Material.RENDER_PRIORITY_MAX
 	_setup_color_picker()
 	_build_brush_ui()
 	_build_hint_ui()
