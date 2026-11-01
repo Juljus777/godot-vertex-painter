@@ -147,6 +147,66 @@ func _mode_render_probe(p3d: Node) -> bool:
 	return ok
 
 
+## F17: no fringe around Normal paint. Green lit plane, one vertex painted red
+## (Normal, full opacity), its neighbors unpainted. Halfway to a neighbor the
+## pixel must be a red/green mix with NO white in it: blue stays at the lit
+## floor. With plain (straight) alpha the unpainted vertices' white leaked in.
+func _halo_probe(p3d: Node) -> bool:
+	var sv := SubViewport.new()
+	sv.size = Vector2i(128, 128)
+	sv.own_world_3d = true
+	sv.render_target_update_mode = SubViewport.UPDATE_DISABLED
+	add_child(sv)
+	var cam := Camera3D.new()
+	cam.position = Vector3(0, 0, 2)
+	sv.add_child(cam)
+	cam.current = true
+	var light := DirectionalLight3D.new()
+	sv.add_child(light)
+	var plane_mesh := PlaneMesh.new()
+	plane_mesh.size = Vector2(2, 2)
+	plane_mesh.subdivide_width = 1
+	plane_mesh.subdivide_depth = 1
+	var green := StandardMaterial3D.new()
+	green.albedo_color = Color(0, 1, 0)
+	plane_mesh.material = green
+	var plane := MeshInstance3D.new()
+	plane.mesh = plane_mesh
+	plane.rotation_degrees = Vector3(90, 0, 0)  # faces the camera
+	sv.add_child(plane)
+
+	var option: OptionButton = painter.get_node("VBoxContainer/ModeRow/ModeOption")
+	var picker: ColorPicker = painter.get_node("VBoxContainer/ColorPicker")
+	option.select(1)  # Normal
+	p3d.mesh_i = plane
+	p3d.load_mesh_for_paint(plane)
+	p3d.ensure_vertex_colors(p3d.active_mdt, 1)
+	p3d.begin_stroke_colors()
+	plane.mesh = ArrayMesh.new()
+	p3d.active_mdt.commit_to_surface(plane.mesh)
+	p3d.prepare_paint_material(plane, 1)
+	var center := 0
+	for v in p3d.active_mdt.get_vertex_count():
+		if p3d.active_mdt.get_vertex(v).length() < p3d.active_mdt.get_vertex(center).length():
+			center = v
+	picker.color = Color(1, 0, 0, 1)
+	var one: Array[int] = [center]
+	p3d.apply_brush(one)
+	sv.render_target_update_mode = SubViewport.UPDATE_ONCE
+	await RenderingServer.frame_post_draw
+	await RenderingServer.frame_post_draw
+	var img := sv.get_texture().get_image()
+	var mid := cam.unproject_position(plane.global_transform * Vector3(0.5, 0, 0))
+	var c := img.get_pixel(int(mid.x), int(mid.y))
+	var ok: bool = c.r > 0.3 and c.g > 0.3 and c.b < 0.15
+	print("HALO_PROBE halfway_red_to_unpainted=%s (blue must stay at the lit floor, no white) %s" % [
+		c, "PASS" if ok else "FAIL"])
+	option.select(0)
+	p3d.mesh_i = null
+	sv.free()
+	return ok
+
+
 func _paint_probe(p3d: Node, view_cam: Camera3D) -> bool:
 	var sphere := SphereMesh.new()
 	sphere.radial_segments = 24
@@ -324,6 +384,7 @@ func _run() -> void:
 	# scaled, textured mesh with no vertex colors (like an atmosphere rock).
 	ok = await _paint_probe(p3d, view_cam) and ok
 	ok = await _mode_render_probe(p3d) and ok
+	ok = await _halo_probe(p3d) and ok
 	view_cam.free()
 
 	print("DEPTH_PROBE_RESULT %s" % ("PASS" if ok else "FAIL"))
