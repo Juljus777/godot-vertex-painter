@@ -130,7 +130,7 @@ func _paint_probe(p3d: Node, view_cam: Camera3D) -> bool:
 
 	# F9: Alt+click on the spot just painted red takes red back (eyedropper)
 	# and paints nothing.
-	picker.color = Color.WHITE
+	picker.color = Color(1, 1, 1, 0.6)  # current opacity 60 %
 	var colors_before = rock.mesh.surface_get_arrays(0)[Mesh.ARRAY_COLOR]
 	var alt_press := press.duplicate() as InputEventMouseButton
 	alt_press.alt_pressed = true
@@ -139,8 +139,8 @@ func _paint_probe(p3d: Node, view_cam: Camera3D) -> bool:
 		await get_tree().process_frame
 	p3d.forward_3d_input(view_cam, release)
 	var unchanged: bool = rock.mesh.surface_get_arrays(0)[Mesh.ARRAY_COLOR] == colors_before
-	var pick_ok: bool = picker.color.is_equal_approx(Color(1, 0, 0)) and unchanged
-	print("PICK_PROBE alt_click picked=%s mesh_unchanged=%s %s" % [picker.color, unchanged,
+	var pick_ok: bool = picker.color.is_equal_approx(Color(1, 0, 0, 0.6)) and unchanged
+	print("PICK_PROBE alt_click picked=%s (RGB red, opacity kept 0.6) mesh_unchanged=%s %s" % [picker.color, unchanged,
 		"PASS" if pick_ok else "FAIL"])
 
 	enable.button_pressed = false
