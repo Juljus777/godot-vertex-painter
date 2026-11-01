@@ -153,6 +153,103 @@ func _instance_steps() -> bool:
 	return ok
 
 
+## F8 in a real editor: Ctrl+click in the 3D viewport while painting selects
+## the mesh under the cursor (instance root if not editable), moves the gizmo
+## lock, and a Ctrl+click on empty space changes nothing.
+func _viewport_surface() -> Control:
+	var editor_vp := EditorInterface.get_editor_viewport_3d(0).get_parent().get_parent()
+	for c in editor_vp.get_children():
+		if c is Control and c.gui_input.get_connections().size() > 0:
+			return c
+	return null
+
+
+func _ctrl_click(surface: Control, pos: Vector2) -> void:
+	for pressed in [true, false]:
+		var ev := InputEventMouseButton.new()
+		ev.button_index = MOUSE_BUTTON_LEFT
+		ev.pressed = pressed
+		ev.ctrl_pressed = true
+		ev.position = pos
+		ev.global_position = pos
+		surface.gui_input.emit(ev)
+	await _wait()
+
+
+## A screen point over `rock`: walk from its projected center toward the
+## viewport center until the point is on screen and the painter's ray test
+## says the cursor is over that rock's mesh. (-1, -1) if none is found.
+func _on_screen_point(painter: Node, root: Node, cam: Camera3D, rect: Rect2, rock: Node3D) -> Vector2:
+	if cam.is_position_behind(rock.global_position):
+		return Vector2(-1, -1)
+	var from := cam.unproject_position(rock.global_position)
+	var center := rect.get_center()
+	for i in 21:
+		var p := from.lerp(center, i / 20.0)
+		if not rect.has_point(p):
+			continue
+		var hit: MeshInstance3D = painter.mesh_under_ray(root, cam.project_ray_origin(p), cam.project_ray_normal(p))
+		if hit != null and rock.is_ancestor_of(hit):
+			return p
+	return Vector2(-1, -1)
+
+
+func _ctrl_select_steps() -> bool:
+	var ok := true
+	DirAccess.copy_absolute(ProjectSettings.globalize_path("res://tests/manual_test_instanced.tscn"),
+		ProjectSettings.globalize_path(INSTANCED_SCENE))
+	EditorInterface.open_scene_from_path(INSTANCED_SCENE)
+	await _wait()
+	EditorInterface.reload_scene_from_path(INSTANCED_SCENE)
+	await _wait()
+	var root := EditorInterface.get_edited_scene_root()
+	var rock_a: Node3D = root.get_node("RockA")
+	var rock_b: Node3D = root.get_node("RockB")
+	var check_box := _enable_check_box()
+	var button: Button = check_box.get_node("../EditableChildrenButton")
+	var surface := _viewport_surface()
+	var cam := EditorInterface.get_editor_viewport_3d(0).get_camera_3d()
+	var vp_rect := Rect2(Vector2.ZERO, EditorInterface.get_editor_viewport_3d(0).size)
+	var painter: Node = check_box.get_node("../../VertexPainter3D")
+	var pos_a := _on_screen_point(painter, root, cam, vp_rect, rock_a)
+	var pos_b := _on_screen_point(painter, root, cam, vp_rect, rock_b)
+	var visible_ok := surface != null and pos_a.x >= 0 and pos_b.x >= 0
+	ok = _report("ctrl_setup", visible_ok, "a=%s b=%s rect=%s" % [pos_a, pos_b, vp_rect]) and ok
+	if not visible_ok:
+		return false
+	var selection := EditorInterface.get_selection()
+	selection.clear()
+	check_box.button_pressed = true
+	await _wait()
+
+	pos_b = _on_screen_point(painter, root, cam, Rect2(Vector2.ZERO, EditorInterface.get_editor_viewport_3d(0).size), rock_b)
+	await _ctrl_click(surface, pos_b)
+	var sel := selection.get_selected_nodes()
+	ok = _report("ctrl_click_selects_instance", sel.size() == 1 and sel[0] == rock_b and button.visible,
+		"selected=%s" % [sel]) and ok
+
+	button.pressed.emit()  # editable children -> its mesh becomes the target (and gets the F4 lock)
+	await _wait()
+	var mesh_b: Node = rock_b.get_node("RockMesh")
+	ok = _report("ctrl_target_locked", mesh_b.has_meta("_edit_lock_")) and ok
+
+	# The dock layout (hint text) can resize the viewport: recompute the point now.
+	pos_a = _on_screen_point(painter, root, cam, Rect2(Vector2.ZERO, EditorInterface.get_editor_viewport_3d(0).size), rock_a)
+	await _ctrl_click(surface, pos_a)
+	sel = selection.get_selected_nodes()
+	ok = _report("ctrl_click_switches", sel.size() == 1 and sel[0] == rock_a, "selected=%s" % [sel]) and ok
+	ok = _report("ctrl_switch_releases_lock", not mesh_b.has_meta("_edit_lock_")) and ok
+
+	await _ctrl_click(surface, Vector2(3, 3))
+	sel = selection.get_selected_nodes()
+	ok = _report("ctrl_click_sky_keeps_selection", sel.size() == 1 and sel[0] == rock_a, "selected=%s" % [sel]) and ok
+
+	check_box.button_pressed = false
+	selection.clear()
+	await _wait()
+	return ok
+
+
 func _run() -> void:
 	await _wait()
 	var ok := true
@@ -162,6 +259,7 @@ func _run() -> void:
 	ok = ok and init_ok
 	ok = await _lock_steps() and ok
 	ok = await _instance_steps() and ok
+	ok = await _ctrl_select_steps() and ok
 	ok = await _step("disable", false, 0) and ok
 	ok = await _step("enable", true, 1) and ok
 	ok = await _step("disable2", false, 0) and ok

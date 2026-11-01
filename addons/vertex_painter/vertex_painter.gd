@@ -8,6 +8,9 @@ var main_panel_instance: VertexPainter
 var dock: EditorDock
 
 func _enter_tree():
+	# Receive 3D viewport input even when no mesh is selected, so Ctrl+click
+	# can pick one while painting. forward_3d_input() passes everything else on.
+	set_input_event_forwarding_always_enabled()
 	main_panel_instance = MAIN_SCREEN.instantiate()
 	
 	main_screen_changed.connect(main_panel_instance.set_screen_name)
