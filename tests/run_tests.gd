@@ -404,6 +404,9 @@ func test_ctrl_select(p3d: Node) -> void:
 		var ctrl_click := _mouse_button(MOUSE_BUTTON_LEFT, true)
 		ctrl_click.ctrl_pressed = true
 		events.append(ctrl_click)
+		var alt_click := _mouse_button(MOUSE_BUTTON_LEFT, true)
+		alt_click.alt_pressed = true
+		events.append(alt_click)
 		var swallowed := 0
 		for ev in events:
 			if p3d.forward_3d_input(cam, ev):
@@ -463,9 +466,11 @@ func test_brush_controls(p3d: Node) -> void:
 	check(picker.sliders_visible and picker.color_modes_visible and picker.presets_visible
 		and picker.sampler_visible, "F7: color picker shows sliders, modes, presets and eyedropper")
 	var slider: HSlider = box.get_node_or_null("OpacityRow/OpacitySlider")
-	var pick: Button = box.get_node_or_null("PickColorButton")
-	check(slider != null and pick != null and pick.toggle_mode, "F7: opacity slider and pick button exist")
-	if slider == null or pick == null:
+	var hint: Label = box.get_node_or_null("ShortcutHint")
+	check(slider != null and hint != null and hint.text.contains("Alt") and hint.text.contains("Ctrl")
+		and box.get_node_or_null("PickColorButton") == null,
+		"F9: opacity slider + shortcut hint (Ctrl/Alt), no pick toggle button")
+	if slider == null:
 		return
 
 	# Opacity: 50 % twice within ONE stroke stays at 50 %; a new stroke builds on it.
@@ -507,20 +512,29 @@ func test_brush_controls(p3d: Node) -> void:
 	root.add_child(bare)
 	check(p3d.color_at(bare, Vector3.ZERO) == Color.WHITE, "F7: a mesh without vertex colors picks white")
 
-	# Pick mode consumes the click even with painting disabled, and never paints.
+	# F9: Alt+click / Alt+drag picks while painting is enabled; never paints.
 	var enable: CheckBox = box.get_node("EnableCheckBox")
-	enable.button_pressed = false
+	enable.button_pressed = true
 	var cam := Camera3D.new()
 	root.add_child(cam)
 	p3d.set_target(mi)
-	pick.button_pressed = true
 	var before: PackedColorArray = mi.mesh.surface_get_arrays(0)[Mesh.ARRAY_COLOR]
-	check(p3d.forward_3d_input(cam, _mouse_button(MOUSE_BUTTON_LEFT, true)),
-		"F7: pick mode consumes the click (painting off)")
-	p3d.forward_3d_input(cam, _mouse_button(MOUSE_BUTTON_LEFT, false))
+	var alt_press := _mouse_button(MOUSE_BUTTON_LEFT, true)
+	alt_press.alt_pressed = true
+	check(p3d.forward_3d_input(cam, alt_press), "F9: Alt+click is consumed while painting")
+	check(not p3d._stroke_down, "F9: Alt+click doesn't start a paint stroke")
+	check(p3d.forward_3d_input(cam, _mouse_motion(true)), "F9: Alt+drag is consumed (keeps picking)")
+	check(p3d.forward_3d_input(cam, _mouse_button(MOUSE_BUTTON_LEFT, false)), "F9: its release is consumed")
 	check(not p3d.click_active and mi.mesh.surface_get_arrays(0)[Mesh.ARRAY_COLOR] == before,
-		"F7: pick mode doesn't paint")
-	pick.button_pressed = false
+		"F9: picking doesn't paint")
+	var alt_rmb := _mouse_button(MOUSE_BUTTON_RIGHT, true)
+	alt_rmb.alt_pressed = true
+	check(not p3d.forward_3d_input(cam, alt_rmb), "F9: Alt+right-click passes through (editor's select-from-list)")
+	check(p3d.forward_3d_input(cam, _mouse_button(MOUSE_BUTTON_LEFT, true)) and p3d._stroke_down,
+		"F9: a plain click still paints (starts a stroke)")
+	p3d.forward_3d_input(cam, _mouse_button(MOUSE_BUTTON_LEFT, false))
+	enable.button_pressed = false
+	p3d._pick_busy = false  # headless: the pick's depth readback never completes
 	p3d.set_target(null)
 	cam.free()
 	mi.free()
