@@ -163,6 +163,8 @@ func start_paint(event: InputEvent) -> void:
 		var had_mode := mesh_paint_mode(mesh_i)
 		if not load_mesh_for_paint(mesh_i):
 			return
+		if had_mode == PaintMode.NORMAL:
+			upgrade_straight_alpha(active_mdt)
 		if had_mode == NONE and mode == PaintMode.NORMAL \
 				and active_mdt.get_format() & Mesh.ARRAY_FORMAT_COLOR:
 			# Existing (e.g. imported) vertex colors: read them as multiply-style
@@ -209,11 +211,11 @@ func primitive_to_array_mesh(prim: PrimitiveMesh) -> ArrayMesh:
 # Meshes without a color array (e.g. imported .glb rocks) would get BLACK for
 # every vertex the brush doesn't touch (MeshDataTool's default), so start them
 # at the mode's "unpainted" value: white for Multiply (texture x 1), and fully
-# transparent for Normal (nothing covers the texture yet).
+# transparent for Normal (nothing covers the texture yet; premultiplied zeros).
 func ensure_vertex_colors(mdt: MeshDataTool, mode: int = PaintMode.MULTIPLY) -> void:
 	if mdt.get_format() & Mesh.ARRAY_FORMAT_COLOR:
 		return
-	var start := Color(1, 1, 1, 0) if mode == PaintMode.NORMAL else Color.WHITE
+	var start := Color(0, 0, 0, 0) if mode == PaintMode.NORMAL else Color.WHITE
 	for v in mdt.get_vertex_count():
 		mdt.set_vertex_color(v, start)
 
@@ -234,19 +236,51 @@ func mesh_paint_mode(mi: MeshInstance3D) -> int:
 		return PaintMode.MULTIPLY
 	return NONE
 
+# Normal-mode vertex colors are PREMULTIPLIED: rgb = paint color x coverage,
+# a = coverage, unpainted = (0, 0, 0, 0). The GPU interpolates vertex colors
+# across each triangle; with plain ("straight") alpha the unpainted vertices'
+# color leaked into the edges of the paint (a white fringe), premultiplied
+# values interpolate cleanly. The paint layer shader divides by alpha again.
+
 # Vertex color conversion between modes.
-# Multiply -> Normal: white (= unchanged) becomes "not painted" (alpha 0); any
-# other color becomes fully covering paint of that color. Normal -> Multiply:
-# the paint color blended toward white by its coverage. Multiply -> Normal ->
-# Multiply is exact; Normal -> Multiply -> Normal is exact for fully covered or
-# unpainted vertices (partial coverage is baked into the color).
+# Multiply -> Normal: white (= unchanged) becomes "not painted"; any other
+# color becomes fully covering paint of that color. Normal -> Multiply: the
+# paint color blended toward white by its coverage (premultiplied: rgb + 1 - a).
+# Multiply -> Normal -> Multiply is exact; Normal -> Multiply -> Normal is exact
+# for fully covered or unpainted vertices (partial coverage is baked in).
 func convert_color(c: Color, from: int, to: int) -> Color:
 	if from == to:
 		return c
 	if to == PaintMode.NORMAL:
 		var is_white := c.r >= 0.998 and c.g >= 0.998 and c.b >= 0.998
-		return Color(1, 1, 1, 0) if is_white else Color(c.r, c.g, c.b, 1)
-	return Color(lerpf(1.0, c.r, c.a), lerpf(1.0, c.g, c.a), lerpf(1.0, c.b, c.a), 1)
+		return Color(0, 0, 0, 0) if is_white else Color(c.r, c.g, c.b, 1)
+	var clear := 1.0 - c.a
+	return Color(minf(c.r + clear, 1.0), minf(c.g + clear, 1.0), minf(c.b + clear, 1.0), 1)
+
+# The plain color of a premultiplied Normal-mode vertex color.
+func unpremultiply(c: Color) -> Color:
+	if c.a <= 0.0:
+		return Color(1, 1, 1, 0)
+	return Color(minf(c.r / c.a, 1.0), minf(c.g / c.a, 1.0), minf(c.b / c.a, 1.0), c.a)
+
+# Normal-mode meshes painted before the premultiplied fix stored plain colors,
+# with unpainted vertices as (1, 1, 1, 0) (which premultiplied data never
+# has). Convert such data in place; returns true if it did.
+func upgrade_straight_alpha(mdt: MeshDataTool) -> bool:
+	if not (mdt.get_format() & Mesh.ARRAY_FORMAT_COLOR):
+		return false
+	var straight := false
+	for v in mdt.get_vertex_count():
+		var c := mdt.get_vertex_color(v)
+		if c.a == 0.0 and (c.r > 0.0 or c.g > 0.0 or c.b > 0.0):
+			straight = true
+			break
+	if not straight:
+		return false
+	for v in mdt.get_vertex_count():
+		var c := mdt.get_vertex_color(v)
+		mdt.set_vertex_color(v, Color(c.r * c.a, c.g * c.a, c.b * c.a, c.a))
+	return true
 
 func _convert_mdt_colors(mdt: MeshDataTool, from: int, to: int) -> void:
 	for v in mdt.get_vertex_count():
@@ -584,29 +618,27 @@ func apply_brush(vertices: Array[int]) -> void:
 	active_mdt.commit_to_surface(mesh_i.mesh)
 
 # Shift+drag eraser dab, by the same opacity. Normal: the paint covers less
-# (alpha drops), so the material shows through again; color kept. Multiply:
-# back toward white, i.e. the texture unchanged.
+# (premultiplied, so rgb and alpha scale together; its color is kept), and the
+# material shows through again. Multiply: back toward white = texture unchanged.
 func blend_erase(base: Color, opacity: float, normal: bool) -> Color:
 	if normal:
-		return Color(base.r, base.g, base.b, base.a * (1.0 - opacity))
+		var keep := 1.0 - opacity
+		return Color(base.r * keep, base.g * keep, base.b * keep, base.a * keep)
 	var restored := base.lerp(Color.WHITE, opacity)
 	restored.a = base.a
 	return restored
 
 # One dab. Multiply: move the factor toward the paint color (alpha untouched).
-# Normal: lay the paint over what's there ("over" compositing); alpha is how
-# much the paint covers the material underneath.
+# Normal: lay the paint over what's there ("over" compositing, premultiplied:
+# paint x opacity + base x (1 - opacity)); alpha is how much the paint covers.
 func blend_paint(base: Color, color: Color, opacity: float, normal: bool) -> Color:
 	if not normal:
 		var blended := base.lerp(color, opacity)
 		blended.a = base.a
 		return blended
-	var a := opacity + base.a * (1.0 - opacity)
-	if a <= 0.0:
-		return Color(1, 1, 1, 0)
-	var keep := base.a * (1.0 - opacity)
-	return Color((color.r * opacity + base.r * keep) / a, (color.g * opacity + base.g * keep) / a,
-		(color.b * opacity + base.b * keep) / a, a)
+	var keep := 1.0 - opacity
+	return Color(color.r * opacity + base.r * keep, color.g * opacity + base.g * keep,
+		color.b * opacity + base.b * keep, opacity + base.a * keep)
 
 # Switch a painted mesh to `to`: convert its vertex colors and set up its
 # material, as one undoable editor action (direct when there's no undo
@@ -622,6 +654,8 @@ func convert_mesh_mode(mi: MeshInstance3D, to: int) -> bool:
 	if mdt.create_from_surface(old_mesh, 0) != OK:
 		return false
 	if mdt.get_format() & Mesh.ARRAY_FORMAT_COLOR:
+		if from == PaintMode.NORMAL:
+			upgrade_straight_alpha(mdt)
 		_convert_mdt_colors(mdt, PaintMode.MULTIPLY if from == LEGACY else from, to)
 	else:
 		ensure_vertex_colors(mdt, to)
@@ -694,6 +728,8 @@ func _pick_color() -> void:
 	_pick_busy = false
 	if hit.is_finite() and is_instance_valid(target):
 		var picked := color_at(target, hit)
+		if mesh_paint_mode(target) == PaintMode.NORMAL:
+			picked = unpremultiply(picked)
 		picked.a = color_picker.color.a  # keep the current opacity
 		color_picker.color = picked
 
